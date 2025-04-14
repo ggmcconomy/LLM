@@ -448,8 +448,8 @@ Please provide a concise explanation of:
 3. Positive note on what's adequately covered so far.
 """
             try:
-                resp = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                resp = openai.chat.completions.create(
+                    model="gpt-4o",
                     messages=[
                         {"role":"system","content":"You are a helpful coverage feedback assistant."},
                         {"role":"user","content": gap_prompt}
