@@ -11,6 +11,7 @@ import faiss
 from datetime import datetime
 from collections import defaultdict
 from sentence_transformers import SentenceTransformer
+from urllib.parse import urlparse, urlunparse
 
 ###############################################################################
 # 1) Page Config & Title
@@ -39,6 +40,13 @@ except KeyError as e:
 
 openai.api_key = OPENAI_API_KEY
 
+# Normalize redirect URI to ensure consistency (remove trailing slashes, etc.)
+def normalize_url(url):
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip('/'), '', '', ''))
+
+MURAL_REDIRECT_URI = normalize_url(MURAL_REDIRECT_URI)
+
 ###############################################################################
 # 3) Mural OAuth & Auth
 ###############################################################################
@@ -59,7 +67,7 @@ def get_authorization_url():
     }
     return "https://app.mural.co/api/public/v1/authorization/oauth2/?" + urlencode(params)
 
-def exchange_code_for_token(code):
+def exchange_code_for_token(code, max_retries=2):
     url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
     data = {
         "client_id": MURAL_CLIENT_ID,
@@ -68,22 +76,40 @@ def exchange_code_for_token(code):
         "code": code,
         "grant_type": "authorization_code"
     }
-    try:
-        resp = requests.post(url, data=data, timeout=10)
-        if resp.status_code == 200:
-            return resp.json()
-        else:
-            error_detail = resp.json().get("error_description", "No error description provided")
-            st.error(f"Mural Auth failed: {resp.status_code} - {error_detail}")
-            if resp.status_code == 400:
-                st.warning("Possible issues: invalid client_id, client_secret, redirect_uri, or authorization code. Please verify your Mural app settings.")
+    for attempt in range(max_retries):
+        try:
+            st.write(f"Attempting token exchange (try {attempt + 1}/{max_retries}) with redirect_uri: {MURAL_REDIRECT_URI}")
+            resp = requests.post(url, data=data, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                try:
+                    error_detail = resp.json().get("error_description", "No error description provided")
+                    error_code = resp.json().get("error", "Unknown error")
+                except ValueError:
+                    error_detail = resp.text
+                    error_code = "Parsing error"
+                st.error(f"Mural Auth failed: {resp.status_code} - {error_code}: {error_detail}")
+                if resp.status_code == 400:
+                    st.warning(
+                        "Possible causes for 400 error:\n"
+                        "- Mismatch between redirect_uri and Mural app settings.\n"
+                        "- Invalid or expired authorization code.\n"
+                        "- Incorrect client_id or client_secret.\n"
+                        "Please verify Mural app settings at https://app.mural.co/developers and ensure "
+                        f"redirect_uri is exactly '{MURAL_REDIRECT_URI}'."
+                    )
+                if attempt < max_retries - 1:
+                    st.info("Retrying token exchange...")
+                    continue
+                return None
+        except requests.RequestException as e:
+            st.error(f"Mural Auth network error: {str(e)}")
+            if attempt < max_retries - 1:
+                st.info("Retrying token exchange...")
+                continue
             return None
-    except requests.RequestException as e:
-        st.error(f"Mural Auth network error: {str(e)}")
-        return None
-    except ValueError as e:
-        st.error(f"Mural Auth response parsing error: {str(e)}")
-        return None
+    return None
 
 def refresh_access_token(refresh_token):
     url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
@@ -152,10 +178,12 @@ except AttributeError:
     auth_code = auth_code_list[0] if isinstance(auth_code_list, list) and auth_code_list else None
 
 if auth_code and not st.session_state.access_token:
-    # Validate inputs before attempting token exchange
-    if not all([MURAL_CLIENT_ID, MURAL_CLIENT_SECRET, MURAL_REDIRECT_URI]):
-        st.error("Mural credentials missing. Please set MURAL_CLIENT_ID, MURAL_CLIENT_SECRET, and MURAL_REDIRECT_URI.")
+    # Validate inputs
+    if not all([MURAL_CLIENT_ID, MURAL_CLIENT_SECRET, MURAL_REDIRECT_URI, auth_code]):
+        st.error("Missing Mural credentials or authorization code. Please check secrets and reauthorize.")
         st.stop()
+    # Log the code for debugging
+    st.write(f"Received authorization code: {auth_code[:10]}... (truncated for security)")
     # Exchange code for token
     tok_data = exchange_code_for_token(auth_code)
     if tok_data:
@@ -163,7 +191,7 @@ if auth_code and not st.session_state.access_token:
         st.session_state.refresh_token = tok_data.get("refresh_token")
         st.session_state.token_expires_in = tok_data.get("expires_in", 900)
         st.session_state.token_timestamp = datetime.now().timestamp()
-        # Clear query params from the URL
+        # Clear query params
         try:
             st.query_params.clear()
         except AttributeError:
@@ -171,7 +199,7 @@ if auth_code and not st.session_state.access_token:
         st.success("Authenticated with Mural!")
         st.stop()
 
-# If we have a token, refresh it if expired
+# Refresh token if expired
 if st.session_state.access_token:
     now_ts = datetime.now().timestamp()
     if (now_ts - st.session_state.token_timestamp) > (st.session_state.token_expires_in - 60):
