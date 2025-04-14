@@ -1,14 +1,12 @@
 ###############################################################################
-# method2.py - Refined for RAG Coverage & Better Visuals
+# method2.py
 #
-# This script:
-#   - Pulls data from Mural (optional),
-#   - Loads the final "clean_risks.csv" from Method 1,
-#   - Uses severity/probability to create RAG thresholds,
-#   - Color-codes a DataFrame for quick scanning,
-#   - Creates pivot charts (stakeholder vs. risk_type) with Altair,
-#   - Optionally performs advanced semantic coverage checks with embeddings,
-#   - Provides coverage feedback & new risk brainstorming.
+# Method 2: Advanced Synergy Coverage & Visualization
+#  - Reads "clean_risks.csv" from Method 1
+#  - Adds RAG color-coding, synergy coverage checks (stakeholder × risk type × attributes),
+#  - Visual dashboards including synergy pivot, coverage heatmaps,
+#  - Provides more advanced synergy-based textual feedback from GPT,
+#  - (Optional) advanced semantic coverage with embeddings & FAISS index from Method 1.
 ###############################################################################
 
 import os
@@ -18,266 +16,223 @@ import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
-import sys
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
-from urllib.parse import urlencode
-from bs4 import BeautifulSoup
-from datetime import datetime
 import altair as alt
+import openai
+from collections import defaultdict
+from datetime import datetime
 import re
-
-# If you get "torch.classes" error with streamlit file watcher, skip it
-sys.modules['torch.classes'] = None
+import faiss
 
 from sentence_transformers import SentenceTransformer
-import faiss
-import openai
 
 ###############################################################################
 # Streamlit Page Config
 ###############################################################################
-st.set_page_config(page_title="Method 2 - RAG Coverage & Visualization", layout="wide")
-st.title("AI Risk Coverage & RAG Dashboard (Method 2)")
+st.set_page_config(page_title="Method 2 - Advanced Synergy Coverage", layout="wide")
+st.title("AI Risk Coverage Dashboard (Method 2) - Advanced Synergy Version")
 
 ###############################################################################
-# Load Secrets (e.g., Mural, OpenAI)
+# 1) Utility & RAG
 ###############################################################################
-try:
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-    MURAL_CLIENT_ID = st.secrets["MURAL_CLIENT_ID"]
-    MURAL_CLIENT_SECRET = st.secrets["MURAL_CLIENT_SECRET"]
-    MURAL_BOARD_ID = st.secrets["MURAL_BOARD_ID"]
-    MURAL_REDIRECT_URI = st.secrets["MURAL_REDIRECT_URI"]
-    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID", "myworkspace")
-except KeyError as e:
-    st.warning(f"Missing secret: {e}. Please ensure .streamlit/secrets.toml is set.")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY","")
-    # If you're not using Mural, you can skip.
-
-openai.api_key = OPENAI_API_KEY
-
-###############################################################################
-# 1) Utility Functions
-###############################################################################
-def clean_html_text(html_text):
-    """Strip HTML tags and return plain text."""
-    if not html_text:
-        return ""
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_text, "html.parser")
-        return soup.get_text(separator=" ").strip()
-    except Exception as e:
-        st.error(f"HTML cleaning error: {str(e)}")
-        return ""
-
-def rag_category(row):
-    """Assign RAG category based on combined_score or severity/probability."""
-    # Example: 
-    #   Red = combined_score >= 13
-    #   Amber = between 9..12
-    #   Green = below 9
-    cscore = row.get("combined_score", 0)
-    if cscore >= 13:
+def assign_rag(combined_score):
+    """
+    Example thresholds:
+     - combined_score >= 13 => Red
+     - 9..12 => Amber
+     - below 9 => Green
+    """
+    if combined_score >= 13:
         return "Red"
-    elif cscore >= 9:
+    elif combined_score >= 9:
         return "Amber"
     else:
         return "Green"
 
-def style_rag(val):
-    """Return a color style for a given RAG string."""
+def color_rag(val):
     if val == "Red":
-        return "background-color: #f8d0d0"  # light red
+        return "background-color: #f8d0d0"
     elif val == "Amber":
-        return "background-color: #fcebcd"  # light orange
+        return "background-color: #fcebcf"
     elif val == "Green":
-        return "background-color: #c9f5d8"  # light green
+        return "background-color: #ccf2d0"
     return ""
 
-def style_rag_dataframe(df):
-    """Apply color-coding to a DataFrame column named 'rag'."""
+def style_rag_col(df):
     if "rag" in df.columns:
-        return df.style.apply(lambda col: [style_rag(v) for v in col] if col.name=="rag" else ["" for _ in col], axis=0)
+        return df.style.apply(lambda col: [color_rag(v) for v in col] if col.name=="rag" else ["" for _ in col], axis=0)
     return df
 
-def log_feedback(risk_description, user_feedback, reason=""):
-    """Log user feedback to CSV or other store."""
-    data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "risk_description": risk_description,
-        "feedback": user_feedback,
-        "reason": reason
-    }
-    df = pd.DataFrame([data])
-    fname = "feedback_log.csv"
-    if os.path.exists(fname):
-        old = pd.read_csv(fname)
-        df = pd.concat([old, df], ignore_index=True)
-    df.to_csv(fname, index=False)
+###############################################################################
+# 2) Load CSV
+###############################################################################
+csv_file = st.text_input("CSV from Method 1 (e.g. 'clean_risks.csv')", "clean_risks.csv")
 
-###############################################################################
-# 2) Mural OAuth & Pull (Optional) - same as before
-###############################################################################
-# ... (you can keep your existing Mural OAuth logic if you want)...
-
-###############################################################################
-# 3) Main Coverage Analysis
-###############################################################################
-st.subheader("Load or Paste Human-Finalized Risks (Optional)")
-user_input = st.text_area("Paste your finalized risks from Mural or local input:", height=120, placeholder="One risk per line...")
-
-st.subheader("Load CSV from Method 1 (clean_risks.csv)")
-csv_file = st.text_input("CSV File Path", value="clean_risks.csv")
-if st.button("Load & Show RAG Table"):
+if st.button("Load & Process CSV"):
     try:
         df = pd.read_csv(csv_file)
-        st.success(f"Loaded {df.shape[0]} lines from {csv_file}.")
-
-        # Ensure we have the columns we need
-        required_cols = ["risk_id","risk_description","risk_type","severity","probability","combined_score"]
-        missing_cols = [c for c in required_cols if c not in df.columns]
-        if missing_cols:
-            st.error(f"Missing columns: {missing_cols}. Check your CSV from Method 1.")
+        st.success(f"Loaded {df.shape[0]} rows from {csv_file}.")
+        # Ensure columns we expect
+        needed_cols = ["risk_id","risk_description","risk_type","stakeholder","severity","probability","combined_score"]
+        missing = [c for c in needed_cols if c not in df.columns]
+        if missing:
+            st.error(f"Missing columns: {missing}. Please confirm your CSV structure.")
             st.stop()
 
-        # Assign RAG category
-        df["rag"] = df.apply(rag_category, axis=1)
+        # 1) Assign RAG
+        df["rag"] = df["combined_score"].apply(assign_rag)
 
-        # Show color-coded table
-        st.markdown("### RAG-Assigned Risk Table")
-        styled_table = style_rag_dataframe(df)
-        st.dataframe(styled_table, use_container_width=True)
+        # 2) Show color-coded table
+        st.subheader("RAG-Assigned Risks")
+        styled_df = style_rag_col(df)
+        st.dataframe(styled_df, use_container_width=True)
 
-        # Let user download the updated CSV (with rag column)
-        csv_data = df.to_csv(index=False)
-        st.download_button("Download Updated CSV (RAG)", data=csv_data, file_name="clean_risks_with_rag.csv", mime="text/csv")
+        # 3) Download updated
+        csv_rag = df.to_csv(index=False)
+        st.download_button("Download RAG CSV", data=csv_rag, file_name="clean_risks_with_rag.csv")
 
-        # Let's produce a pivot chart or two with Altair:
-        st.markdown("### Risk Pivot: Stakeholder vs. Risk Type (avg combined_score)")
+        # 4) Basic synergy coverage approach: stakeholder × risk_type
+        #    We count how many lines exist for each combination
+        st.subheader("Synergy Coverage (Stakeholder × Risk Type)")
+        pivot_synergy = df.groupby(["stakeholder","risk_type"]).size().reset_index(name="count")
+        st.dataframe(pivot_synergy.head(30))
 
-        if "stakeholder" in df.columns and "risk_type" in df.columns:
-            # Make a pivot. We'll do a groupby then show an altair heatmap
-            pivot_data = df.groupby(["stakeholder","risk_type"]).agg({"combined_score":"mean"}).reset_index()
-            chart = alt.Chart(pivot_data).mark_rect().encode(
-                x=alt.X("risk_type:N", sort=alt.SortField("risk_type", order="ascending")),
-                y=alt.Y("stakeholder:N", sort=alt.SortField("stakeholder", order="ascending")),
-                color=alt.Color("combined_score:Q", scale=alt.Scale(scheme="redyellowgreen", domain=[0, 25], clamp=True)),
-                tooltip=["stakeholder","risk_type","combined_score"]
-            ).properties(width=500, height=300)
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No 'stakeholder' or 'risk_type' columns found for pivot chart.")
+        # 5) Heatmap of synergy coverage density
+        st.markdown("#### Heatmap: Stakeholder vs. Risk Type (coverage count)")
+        coverage_chart = alt.Chart(pivot_synergy).mark_rect().encode(
+            x=alt.X("risk_type:N", sort=alt.SortField("risk_type", order="ascending")),
+            y=alt.Y("stakeholder:N", sort=alt.SortField("stakeholder", order="ascending")),
+            color=alt.Color("count:Q", scale=alt.Scale(scheme="reds"), title="Coverage Count"),
+            tooltip=["stakeholder","risk_type","count"]
+        ).properties(width=500, height=300)
+        st.altair_chart(coverage_chart, use_container_width=True)
 
-        st.markdown("### Scatter: Probability vs. Severity")
-        scatter_chart = alt.Chart(df).mark_circle(size=60).encode(
+        # 6) Heatmap for average combined_score as well
+        st.markdown("#### Heatmap: Stakeholder vs. Risk Type (avg combined_score)")
+        pivot_score = df.groupby(["stakeholder","risk_type"])["combined_score"].mean().reset_index()
+        score_chart = alt.Chart(pivot_score).mark_rect().encode(
+            x=alt.X("risk_type:N", sort=alt.SortField("risk_type", order="ascending")),
+            y=alt.Y("stakeholder:N", sort=alt.SortField("stakeholder", order="ascending")),
+            color=alt.Color("combined_score:Q", scale=alt.Scale(scheme="redyellowgreen", domain=[0,25], clamp=True), title="Avg Score"),
+            tooltip=["stakeholder","risk_type","combined_score"]
+        ).properties(width=500, height=300)
+        st.altair_chart(score_chart, use_container_width=True)
+
+        # 7) If you used "attributes" in Method 1, you might have columns like "transparency", "data_quality"...
+        #    We can do synergy coverage for each attribute too (optional).
+        possible_attributes = [c for c in df.columns if c.lower() in ("transparency","data_quality","human_oversight","model_robustness")]
+        if possible_attributes:
+            st.subheader("Attribute-based Synergy Coverage")
+            st.write("Checking if each risk line mentions or includes these attribute columns.")
+            # For demonstration: we just do a pivot for 'stakeholder' × 'risk_type' with average of 'transparency'
+            for attr in possible_attributes:
+                st.markdown(f"##### {attr} coverage pivot (mean or sum)")
+                pivot_attr = df.groupby(["stakeholder","risk_type"])[attr].mean().reset_index()
+                attr_chart = alt.Chart(pivot_attr).mark_rect().encode(
+                    x=alt.X("risk_type:N", sort=alt.SortField("risk_type", order="ascending")),
+                    y=alt.Y("stakeholder:N", sort=alt.SortField("stakeholder", order="ascending")),
+                    color=alt.Color(f"{attr}:Q", scale=alt.Scale(scheme="blues"), title=f"Avg {attr}"),
+                    tooltip=["stakeholder","risk_type",attr]
+                ).properties(width=500, height=300)
+                st.altair_chart(attr_chart, use_container_width=True)
+
+        # 8) Scatter probability vs severity
+        st.subheader("Scatter: Probability vs. Severity (Color = RAG)")
+        scatter_plot = alt.Chart(df).mark_circle(size=60).encode(
             x=alt.X("probability:Q", scale=alt.Scale(domain=[0,5])),
             y=alt.Y("severity:Q", scale=alt.Scale(domain=[0,5])),
             color=alt.Color("rag:N", scale=alt.Scale(domain=["Green","Amber","Red"], range=["green","orange","red"])),
             tooltip=["risk_description","stakeholder","risk_type","severity","probability","combined_score","rag"]
         ).interactive()
-        st.altair_chart(scatter_chart, use_container_width=True)
+        st.altair_chart(scatter_plot, use_container_width=True)
+
+        st.success("Synergy coverage visuals generated successfully.")
+
+        # 9) Provide synergy-based textual feedback with GPT
+        #    We'll highlight stakeholder–risk_type combos with low coverage counts.
+        synergy_gaps = pivot_synergy[pivot_synergy["count"] < 2]  # e.g., combos with <2 lines
+        if synergy_gaps.empty:
+            st.info("No synergy combos found with low coverage (all combos have at least 2 lines).")
+        else:
+            st.warning("Some synergy combos have <2 lines. Summarizing them below:")
+            st.dataframe(synergy_gaps)
+
+            # Let's produce GPT synergy feedback
+            synergy_info_str = "\n".join(
+                f"- {row['stakeholder']} & {row['risk_type']}: {row['count']} lines"
+                for _, row in synergy_gaps.iterrows()
+            )
+            domain = df['domain'].iloc[0] if 'domain' in df.columns else "the AI system"
+            prompt = f"""
+You are an AI synergy coverage expert. We have discovered some stakeholder–risk_type combinations
+with low coverage (under 2 lines) in the risk analysis for {domain}.
+
+These combos are:
+{synergy_info_str}
+
+Explain why synergy coverage for these combos is important, what might be missing,
+and how to strengthen the analysis to ensure completeness for each synergy pair.
+Focus on encouraging deeper investigation into overlooked angles and bridging coverage gaps.
+"""
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role":"system","content":"You are a synergy coverage advisor focusing on AI harm analysis."},
+                        {"role":"user","content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                synergy_feedback = response.choices[0].message.content.strip()
+                st.subheader("Synergy-Based Coverage Feedback (GPT):")
+                st.write(synergy_feedback)
+            except Exception as e:
+                st.error(f"Error generating synergy coverage feedback: {str(e)}")
 
     except FileNotFoundError:
-        st.error(f"File not found: {csv_file}")
-    except Exception as ex:
-        st.error(f"Error loading CSV or generating RAG: {str(ex)}")
+        st.error(f"CSV not found: {csv_file}")
+    except Exception as exc:
+        st.error(f"Error processing file: {str(exc)}")
 
 ###############################################################################
-# 4) Semantic Coverage (Optional advanced step)
+# 3) Optional: Semantic Coverage with Embeddings
 ###############################################################################
-st.subheader("Optional: Semantic Coverage Check")
-st.write("If you want to check how closely your *human-provided* risks match (or miss) the discovered ones, you can embed them and do a nearest-neighbor search on the final CSV embeddings from Method 1. This is more robust than naive substring matching.")
+st.subheader("Optional: Semantic Coverage with Embeddings & FAISS")
 
-embed_model_name = st.text_input("Embed model (for coverage check)", value="all-MiniLM-L6-v2")
-embeddings_file = st.text_input("Embeddings File (from Method 1)", value="embeddings.npy")
-index_file = st.text_input("FAISS Index File (from Method 1)", value="faiss_index.faiss")
+embeddings_file = st.text_input("Embeddings File (Method 1)", "embeddings.npy")
+faiss_index_file = st.text_input("FAISS Index (Method 1)", "faiss_index.faiss")
+user_input_sem = st.text_area("Enter lines to check coverage semantically:", height=120)
 
-if st.button("Run Semantic Coverage Check"):
-    if not user_input.strip():
-        st.warning("No user input lines found. Paste some above.")
+if st.button("Check Semantic Coverage"):
+    if not user_input_sem.strip():
+        st.warning("No user lines to check.")
     else:
-        # Load embeddings & index
         try:
-            existing_df = pd.read_csv(csv_file)
-            embeddings = np.load(embeddings_file)
-            index = faiss.read_index(index_file)
+            # Load the CSV & embeddings
+            df_main = pd.read_csv(csv_file)
+            main_embeddings = np.load(embeddings_file)
+            index = faiss.read_index(faiss_index_file)
+
+            # Embed user lines
+            lines = [ln.strip() for ln in user_input_sem.split("\n") if ln.strip()]
+            embed_model_name = "all-MiniLM-L6-v2"
+            embedder = SentenceTransformer(embed_model_name)
+            user_vecs = embedder.encode(lines, show_progress_bar=False)
+            user_vecs = user_vecs.astype("float32")
+
+            k = 3
+            distances, indices = index.search(user_vecs, k)
+            st.markdown("### Semantic Coverage Results:")
+            for i, line in enumerate(lines):
+                st.markdown(f"**User line {i+1}:** {line}")
+                nn_idx = indices[i]
+                nn_dst = distances[i]
+                for rank, (nid, dist_) in enumerate(zip(nn_idx, nn_dst), start=1):
+                    row_info = df_main.iloc[nid]
+                    st.write(f"Match {rank}: {row_info['risk_description']} (dist={dist_:.3f}, stkh={row_info.get('stakeholder','')}, type={row_info.get('risk_type','')})")
+                st.write("---")
+
         except Exception as e:
-            st.error(f"Error loading embeddings/index: {str(e)}")
-            st.stop()
+            st.error(f"Semantic coverage error: {str(e)}")
 
-        # We embed user lines
-        lines = [l.strip() for l in user_input.split("\n") if l.strip()]
-        embedder = SentenceTransformer(embed_model_name)
-        user_embeds = embedder.encode(lines, show_progress_bar=False)
-        user_embeds = np.array(user_embeds, dtype="float32")
-
-        # Search nearest neighbors
-        k = 3  # top 3 matches
-        distances, indices = index.search(user_embeds, k)
-        # For each user line, show best matches
-        st.markdown("### Semantic Coverage Results")
-        coverage_records = []
-        for i, line in enumerate(lines):
-            st.markdown(f"**User Risk {i+1}:** {line}")
-            nn_idx = indices[i]
-            nn_dists = distances[i]
-            for rank, (idx_n, dist_n) in enumerate(zip(nn_idx, nn_dists), start=1):
-                row_info = existing_df.iloc[idx_n]
-                st.write(f"Match {rank}: {row_info['risk_description']} (distance={dist_n:.4f}, type={row_info.get('risk_type','N/A')})")
-                coverage_records.append({
-                    "user_line": line,
-                    "match_rank": rank,
-                    "matched_risk_id": row_info["risk_id"],
-                    "matched_risk_description": row_info["risk_description"],
-                    "distance": dist_n
-                })
-            st.write("---")
-
-        # Optionally convert coverage_records to DataFrame
-        df_coverage = pd.DataFrame(coverage_records)
-        if not df_coverage.empty:
-            st.markdown("#### Download Coverage Matches as CSV")
-            st.download_button("Download Coverage CSV", df_coverage.to_csv(index=False), "semantic_coverage.csv", "text/csv")
-        else:
-            st.info("No coverage matches found or no user lines available.")
-
-###############################################################################
-# 5) Coverage Feedback & Brainstorming
-###############################################################################
-st.subheader("Coverage Feedback & Brainstorming")
-if st.button("Generate Coverage Feedback & Suggestions"):
-    # Very simple approach: pass the user input + the loaded CSV to GPT for a final summary
-    # *This is optional; you may prefer a more advanced approach.*
-    try:
-        df_loaded = pd.read_csv(csv_file)
-        domain = df_loaded['domain'].iloc[0] if 'domain' in df_loaded.columns else "AI domain"
-        lines_str = user_input if user_input.strip() else "(no user lines)"
-
-        prompt = f"""
-You are a coverage analysis expert for {domain}.
-The user-provided lines:
-{lines_str}
-
-We have discovered many risks in the CSV (not shown in full).
-Provide a short textual feedback on coverage gaps or overlooked angles.
-Then suggest 3 new risk ideas that are not obviously covered.
-"""
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role":"system","content":"You are a coverage analysis expert focusing on AI risk."},
-                {"role":"user","content":prompt}
-            ],
-            temperature=0.7,
-            max_tokens=500
-        )
-        st.markdown("**Coverage Feedback & Suggestions:**")
-        st.write(response.choices[0].message.content.strip())
-
-    except Exception as e:
-        st.error(f"Error generating coverage feedback: {str(e)}")
-
-st.markdown("---")
-st.info("End of Method 2 (Refined). Explore your RAG coverage & pivot charts above, or do further analysis as needed.")
+st.info("This advanced synergy coverage approach offers deeper stakeholder-type analysis plus optional embeddings for coverage checks.")
