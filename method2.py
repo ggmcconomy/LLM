@@ -59,13 +59,22 @@ def clean_html_text(html_text):
         return ""
     try:
         soup = BeautifulSoup(html_text, "html.parser")
+        # Replace <br> tags with spaces
         for br in soup.find_all("br"):
             br.replace_with(" ")
+        # Extract text from all nested tags
         cleaned = soup.get_text(separator=" ").strip()
-        return cleaned if cleaned else html_text.strip()
+        if not cleaned:
+            # Fallback: strip HTML tags manually with regex
+            cleaned = re.sub(r'<[^>]+>', ' ', html_text).strip()
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
     except Exception as e:
         st.error(f"HTML cleanup error: {e}")
-        return html_text.strip()
+        # Fallback: strip HTML tags with regex
+        cleaned = re.sub(r'<[^>]+>', ' ', html_text).strip()
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
 
 def log_feedback(risk_description, user_feedback, disagreement_reason=""):
     data = {
