@@ -1,0 +1,11 @@
+streamlit==1.44.1
+torch==2.4.1
+sentence-transformers==4.0.2
+faiss-cpu==1.10.0
+openai==1.72.0
+pandas==2.2.3
+numpy==2.2.4
+requests==2.32.3
+urllib3==2.4.0
+bs4==0.0.2
+matplotlib==3.9.2
