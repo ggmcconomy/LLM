@@ -460,4 +460,11 @@ if st.button("Check Semantic Coverage"):
                 st.write(f"**Your line**: {uln}")
                 for rank, (nid, dist_) in enumerate(zip(I[i], D[i]), start=1):
                     row_ = df2.iloc[nid]
-                    st.write(f"{rank}) {row_['risk_description']} (dist
+                    st.write(f"{rank}) {row_['risk_description']} (dist={dist_:.3f}, stkh={row_.get('stakeholder', '')}, type={row_.get('risk_type', '')})")
+                st.write("---")
+        except Exception as e:
+            st.error(f"Semantic coverage error: {str(e)}")
+st.write("DEBUG: Semantic coverage section rendered")
+
+st.info("All done! This script uses st.query_params + st.stop for Mural auth.")
+st.write("DEBUG: Script completed")
