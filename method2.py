@@ -59,10 +59,13 @@ def clean_html_text(html_text):
         return ""
     try:
         soup = BeautifulSoup(html_text, "html.parser")
-        return soup.get_text(separator=" ").strip()
+        for br in soup.find_all("br"):
+            br.replace_with(" ")
+        cleaned = soup.get_text(separator=" ").strip()
+        return cleaned if cleaned else html_text.strip()
     except Exception as e:
         st.error(f"HTML cleanup error: {e}")
-        return ""
+        return html_text.strip()
 
 def log_feedback(risk_description, user_feedback, disagreement_reason=""):
     data = {
@@ -310,46 +313,46 @@ with st.sidebar:
     custom_mural_id = st.text_input("Optional Mural ID", value=MURAL_BOARD_ID)
     if st.button("List Murals"):
         ms = list_murals(st.session_state["mural_access_token"])
-        st.write(ms if ms else "No murals found.")
-   if st.button("Pull Stickies"):
-    try:
-        token = st.session_state["mural_access_token"]
-        real_id = custom_mural_id.strip()
-        st.write(f"Checking mural ID: {real_id}")
-        if not verify_mural(token, real_id):
-            real_id = normalize_mural_id(real_id)
-            st.write(f"Normalized mural ID: {real_id}")
+        st.write("Available murals:", ms if ms else "No murals found.")
+    if st.button("Pull Stickies"):
+        try:
+            token = st.session_state["mural_access_token"]
+            real_id = custom_mural_id.strip()
+            st.write(f"Checking mural ID: {real_id}")
             if not verify_mural(token, real_id):
-                st.error("Cannot find mural.")
-                st.stop()
-        w_url = f"https://app.mural.co/api/public/v1/murals/{real_id}/widgets"
-        h = {"Authorization":f"Bearer {token}"}
-        s = requests.Session()
-        retr = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
-        s.mount("https://", HTTPAdapter(max_retries=retr))
-        r = s.get(w_url, headers=h, timeout=10)
-        st.write(f"API status code: {r.status_code}")
-        if r.status_code == 200:
-            raw_response = r.json()
-            widgets = raw_response.get("value", [])
-            st.write("Full API response:", raw_response)
-            st.write("Widgets:", widgets)
-            sticky_items = []
-            for w_ in widgets:
-                widget_type = w_.get("type","").lower()
-                st.write(f"Widget: {w_}")
-                if widget_type == "sticky_note":
-                    raw = w_.get("htmlText") or w_.get("text") or w_.get("content","")
-                    cleaned = clean_html_text(raw)
-                    st.write(f"Sticky: raw={raw}, cleaned={cleaned}")
-                    if cleaned:
-                        sticky_items.append(cleaned)
-            st.session_state["mural_notes"] = sticky_items
-            st.success(f"Pulled {len(sticky_items)} sticky notes!")
-        else:
-            st.error(f"Pull stickies: {r.status_code}")
-    except Exception as e:
-        st.error(f"Error: {e}")
+                real_id = normalize_mural_id(real_id)
+                st.write(f"Normalized mural ID: {real_id}")
+                if not verify_mural(token, real_id):
+                    st.error("Cannot find mural.")
+                    st.stop()
+            w_url = f"https://app.mural.co/api/public/v1/murals/{real_id}/widgets"
+            h = {"Authorization": f"Bearer {token}"}
+            s = requests.Session()
+            retr = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
+            s.mount("https://", HTTPAdapter(max_retries=retr))
+            r = s.get(w_url, headers=h, timeout=10)
+            st.write(f"API status code: {r.status_code}")
+            if r.status_code == 200:
+                raw_response = r.json()
+                widgets = raw_response.get("value", [])
+                st.write("Full API response:", raw_response)
+                st.write("Widgets:", widgets)
+                sticky_items = []
+                for w_ in widgets:
+                    widget_type = w_.get("type", "").lower()
+                    st.write(f"Widget: {w_}")
+                    if widget_type == "sticky_note":
+                        raw = w_.get("htmlText") or w_.get("text") or w_.get("content", "")
+                        cleaned = clean_html_text(raw)
+                        st.write(f"Sticky: raw={raw}, cleaned={cleaned}")
+                        if cleaned:
+                            sticky_items.append(cleaned)
+                st.session_state["mural_notes"] = sticky_items
+                st.success(f"Pulled {len(sticky_items)} sticky notes!")
+            else:
+                st.error(f"Pull stickies failed: {r.status_code}")
+        except Exception as e:
+            st.error(f"Error pulling stickies: {e}")
     if st.button("Clear Session"):
         st.session_state.clear()
         st.query_params.clear()
@@ -438,6 +441,5 @@ if st.button("Analyze Coverage"):
                 st.write(f"**Input {i+1}**: {line_i}")
                 for rank, (dist_v, idx_v) in enumerate(zip(dists, idxs), start=1):
                     row_ = df.iloc[idx_v]
-                    # Fixed unterminated f-string
                     st.write(f"{rank}) {row_['risk_description']} (distance={dist_v:.3f})")
                 st.write("---")
