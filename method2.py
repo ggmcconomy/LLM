@@ -1,7 +1,5 @@
-###############################################################################
-# method2.py - Full Method 2 script with Mural OAuth, synergy coverage, 
-# brainstorming, mitigation, semantic coverage, no deprecated calls.
-###############################################################################
+# method2.py - Fully Restored and Updated Method 2 (GPT + Synergy + Mitigation + Semantic)
+
 import os
 import json
 import uuid
@@ -16,34 +14,25 @@ from datetime import datetime
 from sentence_transformers import SentenceTransformer
 from bs4 import BeautifulSoup
 
-###############################################################################
-# 1) Page Config
-###############################################################################
-st.set_page_config(page_title="Method 2 - AI Risk Coverage", layout="wide")
-st.title("AI Risk Coverage & Mitigation Dashboard (Method 2) - Comprehensive & 2024 Safe")
+st.set_page_config(page_title="Method 2 - Full Risk Coverage Toolkit", layout="wide")
+st.title("AI Risk Coverage & Mitigation Dashboard (Method 2) ✅ Full Functionality")
 
-###############################################################################
-# 2) Load Secrets or Fallback Env
-###############################################################################
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY",""))
+# Load secrets or env
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
 MURAL_CLIENT_ID = st.secrets.get("MURAL_CLIENT_ID", "")
 MURAL_CLIENT_SECRET = st.secrets.get("MURAL_CLIENT_SECRET", "")
 MURAL_BOARD_ID = st.secrets.get("MURAL_BOARD_ID", "")
 MURAL_REDIRECT_URI = st.secrets.get("MURAL_REDIRECT_URI", "")
-
 openai.api_key = OPENAI_API_KEY
 
-###############################################################################
-# 3) Session State (Mural OAuth)
-###############################################################################
+# Session
 if "access_token" not in st.session_state:
     st.session_state.access_token = None
 if "auth_complete" not in st.session_state:
     st.session_state.auth_complete = False
 
-###############################################################################
-# 4) Mural OAuth Helpers
-###############################################################################
+# OAuth
+
 def get_authorization_url():
     from urllib.parse import urlencode
     params = {
@@ -56,269 +45,139 @@ def get_authorization_url():
     return "https://app.mural.co/api/public/v1/authorization/oauth2/?" + urlencode(params)
 
 def exchange_code_for_token(code):
-    url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
-    data = {
+    r = requests.post("https://app.mural.co/api/public/v1/authorization/oauth2/token", data={
         "client_id": MURAL_CLIENT_ID,
         "client_secret": MURAL_CLIENT_SECRET,
         "redirect_uri": MURAL_REDIRECT_URI,
         "code": code,
         "grant_type": "authorization_code"
-    }
-    resp = requests.post(url, data=data)
-    if resp.status_code == 200:
-        return resp.json()
-    else:
-        st.error(f"Mural Auth failed: {resp.status_code}")
-        return None
+    })
+    return r.json() if r.status_code == 200 else None
 
 def pull_mural_stickies(token, mural_id):
-    url = f"https://app.mural.co/api/public/v1/murals/{mural_id}/widgets"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers)
-    if resp.status_code != 200:
-        st.error(f"Failed to pull Mural stickies: {resp.status_code}")
-        return []
-    data = resp.json()
-    widgets = data.get("value", [])
-    lines = []
-    for w in widgets:
-        if w.get("type","").replace(" ","_").lower() == "sticky_note":
-            raw_text = w.get("htmlText") or w.get("text") or ""
-            cleaned = BeautifulSoup(raw_text, "html.parser").get_text(separator=" ").strip()
-            if cleaned:
-                lines.append(cleaned)
-    return lines
+    r = requests.get(f"https://app.mural.co/api/public/v1/murals/{mural_id}/widgets", headers={"Authorization": f"Bearer {token}"})
+    if r.status_code != 200: return []
+    widgets = r.json().get("value", [])
+    return [BeautifulSoup(w.get("htmlText") or w.get("text") or "", "html.parser").get_text(separator=" ").strip() for w in widgets if w.get("type", "").lower() == "sticky_note"]
 
-###############################################################################
-# 5) Handle Mural OAuth Callback
-###############################################################################
 qs = st.query_params
 auth_code = qs.get("code")
-if isinstance(auth_code, list):
-    auth_code = auth_code[0]
-
-# If we have code but no token or not completed auth
+if isinstance(auth_code, list): auth_code = auth_code[0]
 if auth_code and not st.session_state.access_token and not st.session_state.auth_complete:
-    token_data = exchange_code_for_token(auth_code)
-    if token_data:
-        st.session_state.access_token = token_data.get("access_token")
+    tok = exchange_code_for_token(auth_code)
+    if tok:
+        st.session_state.access_token = tok.get("access_token")
         st.session_state.auth_complete = True
-        st.success("Authenticated with Mural!")
+        st.success("✅ Authenticated with Mural!")
         st.query_params.clear()
         st.experimental_rerun()
 
-###############################################################################
-# 6) Mural Sidebar
-###############################################################################
-auth_url = get_authorization_url()
-st.sidebar.markdown(f"[Authorize with Mural]({auth_url})")
-mural_id_input = st.sidebar.text_input("Mural Board ID", value=MURAL_BOARD_ID)
+# Sidebar - Mural
+st.sidebar.markdown(f"[Authorize with Mural]({get_authorization_url()})")
+mural_id = st.sidebar.text_input("Mural Board ID", value=MURAL_BOARD_ID)
 if st.sidebar.button("Pull Sticky Notes") and st.session_state.access_token:
-    notes = pull_mural_stickies(st.session_state.access_token, mural_id_input)
+    notes = pull_mural_stickies(st.session_state.access_token, mural_id)
     if notes:
         st.session_state["mural_notes"] = notes
-        st.success(f"Pulled {len(notes)} notes from Mural board '{mural_id_input}'.")
+        st.success(f"Pulled {len(notes)} notes from Mural.")
 
-###############################################################################
-# 7) Display / Collect Finalized Human Risks
-###############################################################################
-st.subheader("1. Human-Finalized Risks (From Mural or Manual)")
-default_text = "\n".join(st.session_state.get("mural_notes", []))
-user_input = st.text_area(
-    "Final Risk Lines from Mural or manually combined:",
-    value=default_text,
-    height=180
-)
+# Step 1: Human Final Risks
+st.subheader("1️⃣ Human-Finalized Risks")
+def_text = "\n".join(st.session_state.get("mural_notes", []))
+user_input = st.text_area("Finalized risks from Mural or manual: (one per line)", value=def_text, height=200)
 
-###############################################################################
-# 8) The RAG function
-###############################################################################
-def rag_from_score(sc):
-    if sc >= 13:
-        return "Red"
-    elif sc >= 9:
-        return "Amber"
-    else:
-        return "Green"
-
-###############################################################################
-# 9) Synergy Analysis & CSV from Method 1
-###############################################################################
-st.subheader("2. Load CSV from Method 1, Perform Synergy Coverage, Brainstorm, Mitigation")
-
-csv_path = st.text_input("CSV from Method 1", "clean_risks.csv")
-
-def color_rag_bg(val):
-    if val=="Red": return "background-color: #f8cccc"
-    elif val=="Amber": return "background-color: #fcebcf"
-    elif val=="Green": return "background-color: #ccf2d0"
-    return ""
-
-def style_rag(df):
-    if "rag" in df.columns:
-        return df.style.apply(
-            lambda col: [color_rag_bg(v) for v in col] if col.name=="rag" else ["" for _ in col],
-            axis=0
-        )
-    return df
-
-if st.button("Run Coverage Analysis"):
+# Step 2: Load CSV
+st.subheader("2️⃣ Analyze Risk Landscape from Method 1")
+csv_file = st.text_input("Method 1 CSV File", "clean_risks.csv")
+if st.button("Analyze CSV"):
     try:
-        df = pd.read_csv(csv_path)
-        st.success(f"Loaded {df.shape[0]} lines from {csv_path}")
-        needed_cols = ["risk_id","risk_description","risk_type","stakeholder","severity","probability","combined_score"]
-        missing = [c for c in needed_cols if c not in df.columns]
-        if missing:
-            st.error(f"CSV missing these columns: {missing}")
+        df = pd.read_csv(csv_file)
+        if "combined_score" not in df:
+            st.error("Missing 'combined_score' column in CSV.")
             st.stop()
 
-        # RAG
-        df["rag"] = df["combined_score"].apply(rag_from_score)
+        df["rag"] = df["combined_score"].apply(lambda x: "Red" if x >= 13 else ("Amber" if x >= 9 else "Green"))
+        st.dataframe(df.head(50))
 
-        st.markdown("### RAG-Enhanced DataFrame (first 30 rows)")
-        styled = style_rag(df.head(30))
-        st.dataframe(styled, use_container_width=True)
+        st.markdown("### 🔍 Synergy Coverage")
+        synergy = df.groupby(["stakeholder", "risk_type"]).size().reset_index(name="count")
+        st.dataframe(synergy)
 
-        # synergy coverage
-        synergy_cov = df.groupby(["stakeholder","risk_type"]).size().reset_index(name="count")
-        st.markdown("### Synergy Coverage (stakeholder×risk_type count)")
-        st.dataframe(synergy_cov.head(50))
-
-        # synergy heatmap
-        st.markdown("#### Heatmap: coverage count")
-        chart_cov = alt.Chart(synergy_cov).mark_rect().encode(
-            x=alt.X("risk_type:N"),
-            y=alt.Y("stakeholder:N"),
-            color=alt.Color("count:Q", scale=alt.Scale(scheme="blues")),
-            tooltip=["stakeholder","risk_type","count"]
+        chart = alt.Chart(synergy).mark_rect().encode(
+            x="risk_type:N", y="stakeholder:N", color="count:Q",
+            tooltip=["stakeholder", "risk_type", "count"]
         ).properties(width=600, height=400)
-        st.altair_chart(chart_cov, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
-        # synergy gap
-        synergy_gaps = synergy_cov[synergy_cov["count"]<2]
-        if synergy_gaps.empty:
-            st.info("No synergy combos with <2 coverage lines. Good coverage!")
-        else:
-            st.warning("Some synergy combos have under 2 lines coverage.")
-            st.dataframe(synergy_gaps)
+        st.subheader("3️⃣ GPT-Based Brainstorming for Gaps")
+        st.write("Synergy combos with low coverage (less than 2 lines):")
+        gaps = synergy[synergy["count"] < 2]
+        st.dataframe(gaps)
 
-        ############################################################################
-        # BRAINSTORM: GPT suggestions
-        ############################################################################
-        st.subheader("Brainstorm Additional Risks for Synergy Gaps")
-
-        # Let user pick a stakeholder or type to focus
-        focus_stk = st.text_input("Focus Stakeholder (optional)", "")
-        focus_rtyp = st.text_input("Focus Risk Type (optional)", "")
-        n_sugg = st.slider("Number of Brainstorm Suggestions", 1, 10, 5)
-
-        if st.button("Brainstorm Missing Risks"):
-            synergy_str = "\n".join(
-                f"- {row['stakeholder']} & {row['risk_type']}, coverage={row['count']}"
-                for _, row in synergy_gaps.iterrows()
-            )
-            domain = df['domain'].iloc[0] if 'domain' in df.columns else "the AI system"
-            prompt_b = f"""
-You are an AI risk brainstorming assistant for {domain}.
-We found synergy combos with low coverage:
-{synergy_str}
-
-Focus on stakeholder='{focus_stk}' and risk_type='{focus_rtyp}' if relevant.
-Propose {n_sugg} new or overlooked AI deployment risks, each with a short rationale.
+        n_sugg = st.slider("Number of suggestions", 3, 10, 5)
+        if st.button("💡 Brainstorm Suggestions"):
+            prompt = f"""
+Suggest {n_sugg} overlooked or underrepresented AI deployment risks.
+Each risk should reflect gaps in stakeholder × risk_type synergy:
+{gaps.to_string(index=False)}
+Output 1 risk per bullet.
 """
             try:
-                resp = openai.chat.completions.create(
-                    model="gpt-40-mini",
+                resp = openai.ChatCompletion.create(
+                    model="gpt-4",
                     messages=[
-                        {"role":"system","content":"You are a synergy coverage brainstorming assistant."},
-                        {"role":"user","content": prompt_b}
+                        {"role": "system", "content": "You are an AI risk discovery expert."},
+                        {"role": "user", "content": prompt}
                     ],
-                    max_tokens=600,
-                    temperature=0.8
+                    max_tokens=800
                 )
-                st.markdown("#### Brainstormed Additional Risks:")
-                st.write(resp.choices[0].message.content.strip())
+                st.markdown("**Suggested New Risks:**")
+                st.markdown(resp.choices[0].message.content)
             except Exception as e:
-                st.error(f"Brainstorm GPT error: {str(e)}")
+                st.error(f"OpenAI error: {str(e)}")
 
-        ############################################################################
-        # MITIGATION: GPT suggestions
-        ############################################################################
-        st.subheader("Suggest Mitigation Strategies for a Risk")
-        pick_risk = st.selectbox("Pick a risk from CSV", ["(none)"] + df["risk_description"].head(30).tolist())
-
-        if st.button("Generate Mitigation"):
-            if pick_risk and pick_risk!="(none)":
-                domain = df["domain"].iloc[0] if "domain" in df.columns else "the AI domain"
-                prompt_m = f"""
-You are an AI risk mitigation expert for {domain}.
-We have the following risk:
-
-'{pick_risk}'
-
-Propose 2-3 human-centric mitigation strategies as bullet points with short rationale.
+        st.subheader("4️⃣ Mitigation Strategies")
+        pick = st.selectbox("Pick a risk to mitigate", df["risk_description"].head(30))
+        if st.button("🛡️ Generate Mitigation"):
+            prompt_m = f"""
+You are an AI risk mitigation expert. Provide 2-3 strategies to mitigate:
+"{pick}"
+Include a short rationale per strategy.
 """
-                try:
-                    resp = openai.chat.completions.create(
-                        model="gpt-40-mini",
-                        messages=[
-                            {"role":"system","content":"You are a helpful AI risk mitigation advisor."},
-                            {"role":"user","content":prompt_m}
-                        ],
-                        max_tokens=600,
-                        temperature=0.7
-                    )
-                    st.markdown("#### Mitigation Strategies:")
-                    st.write(resp.choices[0].message.content.strip())
-                except Exception as e:
-                    st.error(f"Mitigation GPT error: {str(e)}")
-            else:
-                st.warning("No risk chosen for mitigation.")
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": "You provide actionable AI mitigation advice."},
+                        {"role": "user", "content": prompt_m}
+                    ],
+                    max_tokens=600
+                )
+                st.markdown("**Mitigation Suggestions:**")
+                st.markdown(resp.choices[0].message.content)
+            except Exception as e:
+                st.error(f"OpenAI error: {str(e)}")
 
-    except FileNotFoundError:
-        st.error(f"File not found: {csv_path}")
+        st.subheader("5️⃣ Optional: Semantic Similarity Check")
+        embed_file = st.text_input("Embeddings file", "embeddings.npy")
+        faiss_file = st.text_input("FAISS index file", "faiss_index.faiss")
+        lines_to_check = st.text_area("Paste risks to check", height=120)
+        if st.button("🔍 Check Semantic Matches"):
+            lines = [l.strip() for l in lines_to_check.split("\n") if l.strip()]
+            try:
+                index = faiss.read_index(faiss_file)
+                embed = SentenceTransformer("all-MiniLM-L6-v2")
+                vecs = embed.encode(lines).astype("float32")
+                D, I = index.search(vecs, 3)
+                for i, line in enumerate(lines):
+                    st.markdown(f"**{line}**")
+                    for j, idx in enumerate(I[i]):
+                        match = df.iloc[idx]
+                        st.write(f"{j+1}. {match['risk_description']} (dist={D[i][j]:.3f})")
+            except Exception as e:
+                st.error(f"Error running semantic similarity: {e}")
+
+        st.download_button("📥 Download Enriched CSV", data=df.to_csv(index=False), file_name="method2_enriched.csv")
+
     except Exception as e:
-        st.error(f"Coverage analysis error: {str(e)}")
-
-###############################################################################
-# 10) Optional: Semantic Coverage w/ Embeddings + FAISS
-###############################################################################
-st.subheader("3. Optional Semantic Coverage with Embeddings + FAISS")
-
-emb_file = st.text_input("Embeddings file (.npy)", "embeddings.npy")
-faiss_file = st.text_input("FAISS index (.faiss)", "faiss_index.faiss")
-semantic_input = st.text_area("Risk lines to check coverage semantically", height=120)
-
-if st.button("Check Semantic Coverage"):
-    lines_ = [l.strip() for l in semantic_input.split("\n") if l.strip()]
-    if not lines_:
-        st.warning("No lines to check.")
-    else:
-        try:
-            df_main = pd.read_csv(csv_path)
-            main_embeds = np.load(emb_file)
-            index = faiss.read_index(faiss_file)
-
-            model_name = "all-MiniLM-L6-v2"
-            embedder = SentenceTransformer(model_name)
-            user_vecs = embedder.encode(lines_, show_progress_bar=False).astype("float32")
-
-            k=3
-            D,I = index.search(user_vecs, k)
-            st.markdown("### Semantic Coverage Matches:")
-            for i, userln in enumerate(lines_):
-                st.markdown(f"**Your line**: {userln}")
-                for rank, (nid,dist_) in enumerate(zip(I[i],D[i]), start=1):
-                    row_ = df_main.iloc[nid]
-                    st.write(f"Match {rank}: {row_['risk_description']} (distance={dist_:.3f}, stkh={row_.get('stakeholder','')}, type={row_.get('risk_type','')})")
-                st.write("---")
-
-        except FileNotFoundError:
-            st.error("Embeddings or CSV file not found.")
-        except Exception as e:
-            st.error(f"Semantic coverage error: {str(e)}")
-
-###############################################################################
-# Done
-###############################################################################
-st.info("Method 2 script: Mural OAuth, synergy coverage, brainstorming, mitigation, and semantic coverage. No deprecated calls. All in one!")
+        st.error(f"Error loading CSV: {e}")
