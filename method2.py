@@ -437,8 +437,8 @@ Provide a short textual feedback explaining why these gaps matter and how the us
 Emphasize the importance of thorough coverage for a comprehensive AI harms analysis.
 """
             try:
-                resp = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                resp = openai.chat.completions.create(
+                    model="gpt-4o-mini",
                     messages=[{"role":"system","content":"You are a helpful coverage analysis assistant."},
                               {"role":"user","content": feedback_prompt}],
                     max_tokens=500,
@@ -479,8 +479,8 @@ Format each suggestion as a single bullet line that includes:
 Aim for new or overlooked angles not in the user's current list.
 """
     try:
-        resp_b = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+        resp_b = openai.chat.completions.create(
+            model="gpt-4o-mini",
             messages=[{"role":"system","content":"You are a creative risk brainstorming assistant."},
                       {"role":"user","content":prompt_b}],
             max_tokens=800,
