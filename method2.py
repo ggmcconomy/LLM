@@ -58,23 +58,13 @@ def clean_html_text(html_text):
     if not html_text:
         return ""
     try:
-        soup = BeautifulSoup(html_text, "html.parser")
-        # Replace <br> tags with spaces
-        for br in soup.find_all("br"):
-            br.replace_with(" ")
-        # Extract text from all nested tags
-        cleaned = soup.get_text(separator=" ").strip()
-        if not cleaned:
-            # Fallback: strip HTML tags manually with regex
-            cleaned = re.sub(r'<[^>]+>', ' ', html_text).strip()
-            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        # Use regex to strip HTML tags and normalize whitespace
+        cleaned = re.sub(r'<[^>]+>', ' ', html_text)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned
     except Exception as e:
         st.error(f"HTML cleanup error: {e}")
-        # Fallback: strip HTML tags with regex
-        cleaned = re.sub(r'<[^>]+>', ' ', html_text).strip()
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        return cleaned
+        return ""
 
 def log_feedback(risk_description, user_feedback, disagreement_reason=""):
     data = {
@@ -261,7 +251,7 @@ if auth_code and not st.session_state["mural_access_token"]:
         st.session_state["mural_access_token"] = token_data["access_token"]
         st.session_state["mural_refresh_token"] = token_data.get("refresh_token")
         st.session_state["mural_token_expires"] = token_data.get("expires_in", 900)
-        st.session_state["mural_token_ts"] = time.time()
+        st.session_state["mural_token Ministries = time.time()
         
         # Clear the query param "code"
         st.query_params.clear()
@@ -349,13 +339,15 @@ with st.sidebar:
                 sticky_items = []
                 for w_ in widgets:
                     widget_type = w_.get("type", "").lower()
-                    st.write(f"Widget: {w_}")
-                    if widget_type == "sticky_note":
+                    st.write(f"Widget: type={widget_type}, id={w_.get('id')}")
+                    if widget_type == "sticky note":  # Match API's exact casing
                         raw = w_.get("htmlText") or w_.get("text") or w_.get("content", "")
                         cleaned = clean_html_text(raw)
                         st.write(f"Sticky: raw={raw}, cleaned={cleaned}")
                         if cleaned:
                             sticky_items.append(cleaned)
+                        else:
+                            st.write("Warning: Empty cleaned text for sticky note")
                 st.session_state["mural_notes"] = sticky_items
                 st.success(f"Pulled {len(sticky_items)} sticky notes!")
             else:
