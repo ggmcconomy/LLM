@@ -1,92 +1,96 @@
-#############################
+################################################
 # method2.py
 #
 # Purpose:
+#  - Single-tab Mural OAuth (no separate window),
 #  - Pull final discovered risks from "clean_risks.csv" (Method 1 output).
-#  - Optionally pull "human workshop" risks from Mural or text area.
-#  - Compare user-provided final lines vs. discovered set => identify coverage gaps.
-#  - Show coverage bar charts, color-coded RAG table, short gap feedback from GPT (optional).
-#############################
+#  - Optionally pull final workshop lines from Mural or text area.
+#  - Analyze coverage vs. risk_type, stakeholders (node_name), clusters.
+#  - Generate coverage bar charts, RAG table, and optional LLM feedback.
+################################################
 
 import os
 import sys
 import uuid
+import time
 import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
-from datetime import datetime
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
-from urllib.parse import urlencode
-from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
+from datetime import datetime
+from urllib.parse import urlencode
 from collections import Counter
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# For embeddings + similarity search (optional)
+# For optional embeddings + similarity
 from sentence_transformers import SentenceTransformer
 import faiss
 
-# For optional LLM-based feedback
+# For LLM-based feedback (if desired)
 import openai
 
-#############################
-# 1) Basic Setup
-#############################
-st.set_page_config(page_title="Method 2 - Coverage & Gaps", layout="wide")
-st.title("AI Risk Analysis Dashboard (Method 2)")
+################################################
+# 1) PAGE SETUP
+################################################
+st.set_page_config(page_title="Method 2 - Single-Tab Mural Auth", layout="wide")
+st.title("AI Risk Coverage & Mitigation Dashboard (Method 2)")
 
-# Load secrets
+plt.style.use('ggplot')
+
+################################################
+# 2) LOAD SECRETS
+################################################
 try:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     openai.api_key = OPENAI_API_KEY
 
-    # Mural config
     MURAL_CLIENT_ID = st.secrets["MURAL_CLIENT_ID"]
     MURAL_CLIENT_SECRET = st.secrets["MURAL_CLIENT_SECRET"]
-    MURAL_BOARD_ID = st.secrets["MURAL_BOARD_ID"]
     MURAL_REDIRECT_URI = st.secrets["MURAL_REDIRECT_URI"]
-    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID", "someworkspace")
+    # If you have a default board/workspace
+    MURAL_BOARD_ID = st.secrets.get("MURAL_BOARD_ID","")
+    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID","")
 except KeyError as e:
-    st.error(f"Missing secret: {e}. Check your .streamlit/secrets.toml.")
+    st.error(f"Missing secret: {e}. Please configure .streamlit/secrets.toml properly.")
     st.stop()
 
-plt.style.use('ggplot')
-
-#############################
-# 2) Mural OAuth Helpers (Optional)
-#############################
-def get_authorization_url():
+################################################
+# 3) MURAL OAUTH LOGIC (SINGLE TAB)
+################################################
+def get_mural_auth_url():
+    """Generate link to Mural's OAuth in the same tab."""
     params = {
         "client_id": MURAL_CLIENT_ID,
         "redirect_uri": MURAL_REDIRECT_URI,
         "scope": "murals:read murals:write",
-        "state": str(uuid.uuid4()),
-        "response_type": "code"
+        "response_type": "code",
+        "state": "some-unique-state-123"
     }
     return "https://app.mural.co/api/public/v1/authorization/oauth2/?" + urlencode(params)
 
-def exchange_code_for_token(code):
+def exchange_code_for_token(auth_code):
     url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
     data = {
         "client_id": MURAL_CLIENT_ID,
         "client_secret": MURAL_CLIENT_SECRET,
         "redirect_uri": MURAL_REDIRECT_URI,
-        "code": code,
+        "code": auth_code,
         "grant_type": "authorization_code"
     }
     try:
-        r = requests.post(url, data=data, timeout=10)
-        if r.status_code == 200:
-            return r.json()
+        resp = requests.post(url, data=data, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
         else:
-            st.error(f"Auth failed: {r.status_code}")
+            st.error(f"Mural auth failed: {resp.status_code}")
             return None
-    except Exception as e:
-        st.error(f"Auth error: {str(e)}")
+    except Exception as ex:
+        st.error(f"Mural auth exception: {str(ex)}")
         return None
 
-def refresh_access_token(refresh_token):
+def refresh_mural_token(refresh_token):
     url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
     data = {
         "client_id": MURAL_CLIENT_ID,
@@ -99,102 +103,218 @@ def refresh_access_token(refresh_token):
         if r.status_code == 200:
             return r.json()
         else:
-            st.error(f"Refresh token failed: {r.status_code}")
+            st.error(f"Mural refresh token error: {r.status_code}")
             return None
     except Exception as e:
-        st.error(f"Token refresh error: {str(e)}")
+        st.error(f"Mural token refresh exception: {str(e)}")
         return None
 
-# Initialize session tokens
+# Keep tokens in session state
 if "mural_access_token" not in st.session_state:
     st.session_state["mural_access_token"] = None
     st.session_state["mural_refresh_token"] = None
     st.session_state["mural_expires_in"] = None
     st.session_state["mural_token_ts"] = None
 
-# Check query params for mural code=...
-params = st.experimental_get_query_params()
-auth_code = params.get("code")
+# Check if user was redirected back with ?code=...
+qs = st.experimental_get_query_params()
+auth_code = qs.get("code")
 if auth_code and not st.session_state["mural_access_token"]:
-    token_data = exchange_code_for_token(auth_code[0])
-    if token_data:
-        st.session_state["mural_access_token"] = token_data["access_token"]
-        st.session_state["mural_refresh_token"] = token_data.get("refresh_token")
-        st.session_state["mural_expires_in"] = token_data.get("expires_in", 900)
-        st.session_state["mural_token_ts"] = datetime.now().timestamp()
-        st.experimental_set_query_params()  # clear
-        st.success("Mural authenticated!")
-        st.experimental_rerun()
+    # code is typically a list, use first
+    code_val = auth_code[0]
+    if code_val:
+        token_data = exchange_code_for_token(code_val)
+        if token_data:
+            st.session_state["mural_access_token"] = token_data["access_token"]
+            st.session_state["mural_refresh_token"] = token_data.get("refresh_token")
+            st.session_state["mural_expires_in"] = token_data.get("expires_in",900)
+            st.session_state["mural_token_ts"] = datetime.now().timestamp()
+            # Clear code from URL
+            st.experimental_set_query_params()
+            st.success("Authenticated with Mural in the same tab!")
+            st.experimental_rerun()
 
 # If we have a token, check if near expiry
 if st.session_state["mural_access_token"]:
     now_ts = datetime.now().timestamp()
     if (now_ts - st.session_state["mural_token_ts"]) > (st.session_state["mural_expires_in"] - 60):
         # Refresh
-        new_data = refresh_access_token(st.session_state["mural_refresh_token"])
+        new_data = refresh_mural_token(st.session_state["mural_refresh_token"])
         if new_data:
             st.session_state["mural_access_token"] = new_data["access_token"]
             st.session_state["mural_refresh_token"] = new_data.get("refresh_token", st.session_state["mural_refresh_token"])
-            st.session_state["mural_expires_in"] = new_data.get("expires_in", 900)
+            st.session_state["mural_expires_in"] = new_data.get("expires_in",900)
             st.session_state["mural_token_ts"] = datetime.now().timestamp()
 
-#############################
-# 3) Functions
-#############################
-def clean_html_text(html_text):
-    if not html_text:
-        return ""
-    soup = BeautifulSoup(html_text, "html.parser")
-    return soup.get_text(separator=" ").strip()
+################################################
+# 4) HELPER: PULL STICKY NOTES FROM MURAL
+################################################
+def pull_mural_stickies(mural_id, token):
+    import json
+    from bs4 import BeautifulSoup
+    def clean_html_text(html_text):
+        if not html_text:
+            return ""
+        soup = BeautifulSoup(html_text, "html.parser")
+        return soup.get_text(separator=" ").strip()
 
-def pull_mural_stickies(mural_id, auth_token):
-    """
-    Pull sticky notes from a Mural board.
-    Return list of plain text lines.
-    """
     url = f"https://app.mural.co/api/public/v1/murals/{mural_id}/widgets"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {auth_token}"
-    }
+    headers = {"Authorization": f"Bearer {token}", "Accept":"application/json"}
     try:
-        s = requests.Session()
+        sess = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
-        s.mount('https://', HTTPAdapter(max_retries=retries))
-        resp = s.get(url, headers=headers, timeout=10)
+        sess.mount('https://', HTTPAdapter(max_retries=retries))
+        resp = sess.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
-            widgets = resp.json().get("value", [])
-            notes = []
+            js = resp.json()
+            widgets = js.get("value", []) or js.get("data", [])
+            lines = []
             for w in widgets:
-                # check if sticky note
                 wtype = w.get("type","").lower().replace(" ","_")
                 if wtype == "sticky_note":
-                    raw_text = w.get("text") or w.get("htmlText") or ""
-                    txt = clean_html_text(raw_text)
+                    raw = w.get("text") or w.get("htmlText") or ""
+                    txt = clean_html_text(raw)
                     if txt:
-                        notes.append(txt)
-            return notes
+                        lines.append(txt)
+            return lines
         else:
-            st.error(f"Failed pulling mural widgets: {resp.status_code}")
+            st.error(f"Pull Mural error: {resp.status_code}")
             return []
     except Exception as e:
-        st.error(f"Error pulling mural data: {str(e)}")
+        st.error(f"Mural sticky pull exception: {str(e)}")
         return []
 
-def create_side_by_side_bar_chart(title, categories, covered_counts, missed_counts, x_label, y_label, filename):
+################################################
+# 5) SIDEBAR
+################################################
+st.sidebar.header("Mural OAuth")
+if not st.session_state["mural_access_token"]:
+    st.sidebar.write("Not authorized with Mural yet.")
+    auth_url = get_mural_auth_url()
+    # Provide link in same tab
+    st.sidebar.markdown(f"[Authorize with Mural (same tab)]({auth_url})")
+else:
+    st.sidebar.success("Token in session. Ready to pull notes.")
+
+mural_override = st.sidebar.text_input("Mural Board ID", value=MURAL_BOARD_ID)
+if st.sidebar.button("Pull Sticky Notes"):
+    if not st.session_state["mural_access_token"]:
+        st.sidebar.warning("No token. Authorize first.")
+    else:
+        lines = pull_mural_stickies(mural_override, st.session_state["mural_access_token"])
+        if lines:
+            st.session_state["mural_notes"] = lines
+            st.sidebar.success(f"Pulled {len(lines)} notes!")
+        else:
+            st.sidebar.warning("No notes found or error.")
+
+
+################################################
+# 6) LOAD CLEAN_RISKS (Method 1 Output)
+################################################
+csv_file = "clean_risks.csv"
+embeddings_file = "embeddings.npy"
+faiss_file = "faiss_index.faiss"
+
+try:
+    df_risks = pd.read_csv(csv_file)
+    st.write(f"Loaded {len(df_risks)} risks from {csv_file}.")
+    if "risk_type" not in df_risks.columns or "node_name" not in df_risks.columns or "cluster" not in df_risks.columns:
+        st.warning("Column risk_type / node_name / cluster not found in CSV. Some coverage checks may be limited.")
+except FileNotFoundError:
+    st.error(f"Cannot find {csv_file}. Please run Method 1 first.")
+    st.stop()
+
+try:
+    embed_np = np.load(embeddings_file)
+    index = faiss.read_index(faiss_file)
+    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    st.write("Embeddings & FAISS index loaded. We'll do nearest-neighbor coverage checks.")
+except:
+    st.warning("No embeddings or FAISS index found; fallback coverage logic will be naive substring matching.")
+    embedder = None
+    index = None
+
+################################################
+# 7) Gather User's Human Workshop Risks
+################################################
+st.subheader("1) Provide Your Final Workshop Risks")
+
+default_text = ""
+if "mural_notes" in st.session_state:
+    default_text = "\n".join(st.session_state["mural_notes"])
+
+user_input = st.text_area("Enter your final lines (one per line):", value=default_text, height=160)
+
+################################################
+# 8) Coverage Analysis
+################################################
+st.subheader("2) Coverage Analysis & Gaps")
+
+def do_coverage_analysis(user_lines, df_ref):
     """
-    Produce side-by-side coverage bar chart.
+    We'll gather coverage across risk_type, node_name, cluster
+    using either embeddings or naive approach.
     """
+    coverage_dict = {
+        "risk_type": set(),
+        "node_name": set(),
+        "cluster": set()
+    }
+    if not user_lines:
+        return coverage_dict
+
+    if embedder and index:
+        # embedding approach
+        user_embs = np.array(embedder.encode(user_lines), dtype="float32")
+        k = 3  # nearest 3
+        D,I = index.search(user_embs, k)
+        for i, line in enumerate(user_lines):
+            neighbors_idx = I[i]
+            subdf = df_ref.iloc[neighbors_idx]
+            coverage_dict["risk_type"].update(subdf["risk_type"].unique())
+            coverage_dict["node_name"].update(subdf["node_name"].unique())
+            coverage_dict["cluster"].update(subdf["cluster"].unique())
+    else:
+        # naive substring approach
+        combined_text = " ".join(line.lower() for line in user_lines)
+        # gather all sets
+        for rt in df_ref["risk_type"].unique():
+            if str(rt).lower() in combined_text:
+                coverage_dict["risk_type"].add(rt)
+        for nm in df_ref["node_name"].unique():
+            if str(nm).lower() in combined_text:
+                coverage_dict["node_name"].add(nm)
+        for cl in df_ref["cluster"].unique():
+            if str(cl).lower() in combined_text:
+                coverage_dict["cluster"].add(cl)
+    return coverage_dict
+
+def create_side_by_side_chart(title, all_items, covered_set, filename):
+    """
+    For each item in all_items, covered => 1, missed => 1 in the other bar.
+    """
+    cat_list = sorted(set(all_items))
+    covered_vals = []
+    missed_vals = []
+    for c in cat_list:
+        if c in covered_set:
+            covered_vals.append(1)
+            missed_vals.append(0)
+        else:
+            covered_vals.append(0)
+            missed_vals.append(1)
+
+    # create bar chart
     try:
         plt.figure(figsize=(6,4))
-        x = np.arange(len(categories))
+        x = np.arange(len(cat_list))
         width = 0.4
-        plt.bar(x - width/2, covered_counts, width, label='Covered', color='green')
-        plt.bar(x + width/2, missed_counts, width, label='Missed', color='red')
-        plt.xlabel(x_label)
-        plt.ylabel(y_label)
+        plt.bar(x - width/2, covered_vals, width, color='green', label='Covered')
+        plt.bar(x + width/2, missed_vals, width, color='red', label='Missed')
         plt.title(title)
-        plt.xticks(x, categories, rotation=45, ha='right')
+        plt.xticks(x, cat_list, rotation=45, ha='right')
+        plt.ylabel("Count (1=present,0=absent)")
         plt.legend()
         plt.tight_layout()
         plt.savefig(filename)
@@ -204,270 +324,108 @@ def create_side_by_side_bar_chart(title, categories, covered_counts, missed_coun
         st.error(f"Chart error: {str(e)}")
         return False
 
-def color_cell(count):
-    """
-    Return a RAG color style based on coverage count.
-    Suppose we consider:
-      0 => Red
-      1..3 => Amber
-      >3 => Green
-    Customize as needed.
-    """
-    if count == 0:
-        return "background-color: #e74c3c; color:white"  # red
-    elif 1 <= count <= 3:
-        return "background-color: #f39c12; color:white"  # amber
+def color_cell(val):
+    """RAG scale: 0=red, 1..2=amber, >=3=green (example)"""
+    if val == 0:
+        return "background-color: #e74c3c; color:white"
+    elif 1 <= val <=2:
+        return "background-color: #f39c12; color:white"
     else:
-        return "background-color: #2ecc71; color:white"  # green
-
-#############################
-# 4) Load "clean_risks.csv" from Method 1
-#############################
-csv_file = "clean_risks.csv"  # align with method1 naming
-embeddings_file = "embeddings.npy"
-index_file = "faiss_index.faiss"
-
-try:
-    df_risks = pd.read_csv(csv_file)
-    # ensure columns exist
-    required_cols = ["risk_description","risk_type","node_name","cluster"]
-    for c in required_cols:
-        if c not in df_risks.columns:
-            st.warning(f"Column '{c}' not found in {csv_file}. Some coverage checks might not work.")
-    # fill missing
-    df_risks.fillna("", inplace=True)
-
-except FileNotFoundError:
-    st.error(f"File {csv_file} not found. Please run Method 1 first.")
-    st.stop()
-
-# We'll also optionally set up embeddings if we want to do similarity search
-try:
-    embed_np = np.load(embeddings_file)
-    index = faiss.read_index(index_file)
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
-except:
-    st.warning("No embeddings or FAISS index found. Similarity-based coverage might be disabled.")
-    index = None
-    embedder = None
-
-#############################
-# 5) Gather User's Human Analysis
-#############################
-st.sidebar.subheader("Mural Options")
-mural_override = st.sidebar.text_input("Mural ID override", value=MURAL_BOARD_ID)
-use_mural = st.sidebar.checkbox("Pull from Mural?", value=False)
-if use_mural and st.session_state["mural_access_token"]:
-    if st.button("Pull Sticky Notes"):
-        notes = pull_mural_stickies(mural_override, st.session_state["mural_access_token"])
-        if notes:
-            st.session_state["mural_notes"] = notes
-            st.success(f"Pulled {len(notes)} sticky notes from Mural!")
-        else:
-            st.warning("No sticky notes found or Mural pull failed.")
-else:
-    st.sidebar.write("Authenticate with Mural first or uncheck 'Pull from Mural?'")
-
-# main input
-st.subheader("1) Provide Your Final Workshop Risks")
-default_text = ""
-if "mural_notes" in st.session_state:
-    default_text = "\n".join(st.session_state["mural_notes"])
-user_risks_text = st.text_area("Paste your final lines (one per line):", value=default_text, height=150)
-
-#############################
-# 6) Coverage Analysis
-#############################
-st.subheader("2) Coverage Analysis")
-
-def analyze_coverage(user_lines, ref_df):
-    """
-    Compare user lines to reference risks in ref_df to see coverage in categories:
-      - risk_type
-      - node_name (stakeholder)
-      - cluster
-    We'll do a simple match: if a user line (or set) includes a phrase similar to reference?
-    Or we can do embedding-based nearest neighbors. We'll do a naive approach or embedding if available.
-    Return coverage stats as dictionary.
-    """
-    coverage_results = {
-        "risk_types_covered": set(),
-        "stakeholders_covered": set(),
-        "clusters_covered": set()
-    }
-    if not user_lines:
-        return coverage_results
-
-    # If we have embeddings set up, do a nearest-neighbor approach
-    if index and embedder:
-        user_embs = np.array(embedder.encode(user_lines), dtype="float32")
-        k = 3  # top-3 neighbors
-        D,I = index.search(user_embs, k)
-        # gather coverage from neighbors
-        for row_i in range(len(user_lines)):
-            nn_idx = I[row_i]
-            subdf = ref_df.iloc[nn_idx]
-            coverage_results["risk_types_covered"].update(subdf["risk_type"].unique())
-            coverage_results["stakeholders_covered"].update(subdf["node_name"].unique())
-            coverage_results["clusters_covered"].update(subdf["cluster"].unique())
-    else:
-        # fallback: naive substring matching (very crude)
-        all_risk_types = ref_df["risk_type"].unique()
-        all_stakeholders = ref_df["node_name"].unique()
-        all_clusters = ref_df["cluster"].unique()
-
-        # For each user line, just see if it contains substring of risk_type, etc.
-        # or skip substring approach
-        # We'll do a naive approach to show concept:
-        lines_text = " ".join(user_lines).lower()
-        for rt in all_risk_types:
-            if rt.lower() in lines_text:
-                coverage_results["risk_types_covered"].add(rt)
-        for sh in all_stakeholders:
-            if sh.lower() in lines_text:
-                coverage_results["stakeholders_covered"].add(sh)
-        for cl in all_clusters:
-            if str(cl).lower() in lines_text:
-                coverage_results["clusters_covered"].add(cl)
-
-    return coverage_results
-
-def create_rag_table(covered_items, all_items, col_name):
-    """
-    Create a small DataFrame that has [Item, CoverageCount] and color it with a RAG scale.
-    For simplicity, we'll just do a 'covered=1 or 0' approach. Or we can do a numeric count.
-    """
-    data = []
-    for item in sorted(all_items):
-        c = (1 if item in covered_items else 0)
-        data.append((item, c))
-    df_ = pd.DataFrame(data, columns=[col_name,"CoverageCount"])
-    return df_
+        return "background-color: #2ecc71; color:white"
 
 if st.button("Analyze Coverage"):
-    user_lines = [ln.strip() for ln in user_risks_text.split("\n") if ln.strip()]
-    if not user_lines:
-        st.warning("No final lines found. Provide some lines first.")
+    lines = [ln.strip() for ln in user_input.split("\n") if ln.strip()]
+    if not lines:
+        st.warning("No lines to analyze. Provide final lines first.")
     else:
-        # gather coverage
-        coverage = analyze_coverage(user_lines, df_risks)
+        cov = do_coverage_analysis(lines, df_risks)
 
-        # risk_types
+        # Summaries
+        st.write("### Coverage Results")
+        # all possible items
         all_types = df_risks["risk_type"].unique()
-        missed_types = set(all_types) - coverage["risk_types_covered"]
+        all_nodes = df_risks["node_name"].unique()
+        all_clusters = df_risks["cluster"].unique()
 
-        # stakeholders
-        all_sh = df_risks["node_name"].unique()
-        missed_sh = set(all_sh) - coverage["stakeholders_covered"]
+        missed_types = set(all_types) - cov["risk_type"]
+        missed_nodes = set(all_nodes) - cov["node_name"]
+        missed_clusters = set(all_clusters) - cov["cluster"]
 
-        # clusters
-        all_cl = df_risks["cluster"].unique()
-        missed_cl = set(all_cl) - coverage["clusters_covered"]
+        st.write(f"- Covered Risk Types: {sorted(list(cov['risk_type']))}")
+        st.write(f"- Missed Risk Types: {sorted(list(missed_types))}")
+        st.write(f"- Covered Stakeholders (node_name): {sorted(list(cov['node_name']))}")
+        st.write(f"- Missed Stakeholders: {sorted(list(missed_nodes))}")
+        st.write(f"- Covered Clusters: {sorted(list(cov['cluster']))}")
+        st.write(f"- Missed Clusters: {sorted(list(missed_clusters))}")
 
-        st.write("### Coverage Summary")
-        st.write(f"- **Risk Types Covered**: {sorted(list(coverage['risk_types_covered']))}")
-        st.write(f"- **Stakeholders Covered**: {sorted(list(coverage['stakeholders_covered']))}")
-        st.write(f"- **Clusters Covered**: {sorted(list(coverage['clusters_covered']))}")
+        # bar charts
+        # 1) risk_type coverage chart
+        ok1 = create_side_by_side_chart("Risk Type Coverage", all_types, cov["risk_type"], "risk_type.png")
+        if ok1:
+            st.image("risk_type.png", use_column_width=True)
+        # 2) stakeholder coverage
+        ok2 = create_side_by_side_chart("Stakeholder Coverage", all_nodes, cov["node_name"], "stakeholder.png")
+        if ok2:
+            st.image("stakeholder.png", use_column_width=True)
+        # 3) cluster coverage
+        ok3 = create_side_by_side_chart("Cluster Coverage", all_clusters, cov["cluster"], "cluster.png")
+        if ok3:
+            st.image("cluster.png", use_column_width=True)
 
-        st.write("### Missed Coverage")
-        st.write(f"- **Missed Risk Types**: {sorted(list(missed_types))}")
-        st.write(f"- **Missed Stakeholders**: {sorted(list(missed_sh))}")
-        st.write(f"- **Missed Clusters**: {sorted(list(missed_cl))}")
+        # optional RAG table for each category
+        st.write("### RAG Table: Risk Types")
+        rag_data = []
+        for t in sorted(all_types):
+            # We'll define coverage_count = 1 if t in covered, else 0
+            ccount = 1 if t in cov["risk_type"] else 0
+            rag_data.append((t, ccount))
+        df_rag = pd.DataFrame(rag_data, columns=["RiskType","CoverageCount"])
 
-        # Let's do bar charts for risk_type and stakeholder coverage
-        # e.g. "Risk Type Coverage"
-        # We'll count how many in coverage, how many missed
-        def coverage_counts(all_items, covered_set):
-            cov_c = []
-            mis_c = []
-            for item in all_items:
-                # if item is covered => covered=1, missed=0, or if you want counts
-                if item in covered_set:
-                    cov_c.append(1)
-                    mis_c.append(0)
-                else:
-                    cov_c.append(0)
-                    mis_c.append(1)
-            return cov_c, mis_c
+        def rag_coloring(row):
+            cval = row["CoverageCount"]
+            return color_cell(cval)
 
-        # bar chart for risk_type
-        cat_types = sorted(all_types)
-        cov_t, mis_t = coverage_counts(cat_types, coverage["risk_types_covered"])
-        if create_side_by_side_bar_chart(
-            title="Risk Type Coverage",
-            categories=cat_types,
-            covered_counts=cov_t,
-            missed_counts=mis_t,
-            x_label="Risk Type",
-            y_label="Count",
-            filename="risk_type_coverage.png"
-        ):
-            st.image("risk_type_coverage.png", use_column_width=True)
-
-        # bar chart for stakeholder coverage
-        cat_sh = sorted(all_sh)
-        cov_s, mis_s = coverage_counts(cat_sh, coverage["stakeholders_covered"])
-        if create_side_by_side_bar_chart(
-            title="Stakeholder Coverage",
-            categories=cat_sh,
-            covered_counts=cov_s,
-            missed_counts=mis_s,
-            x_label="Stakeholder",
-            y_label="Count",
-            filename="stakeholder_coverage.png"
-        ):
-            st.image("stakeholder_coverage.png", use_column_width=True)
-
-        # Let's do a small RAG table for risk_type coverage
-        st.write("### RAG Table - Risk Types")
-        df_rag_types = create_rag_table(coverage["risk_types_covered"], all_types, "RiskType")
-        def style_rag(df_):
-            return [
-                color_cell(row["CoverageCount"]) for _, row in df_.iterrows()
-            ]
         st.dataframe(
-            df_rag_types.style.apply(style_rag, axis=1, subset=["CoverageCount"])
+            df_rag.style.apply(lambda r: [rag_coloring(r)], axis=1, subset=["CoverageCount"])
         )
 
-        # If you want an LLM-based short gap feedback, you can do something like:
-        if st.checkbox("Generate LLM Gap Feedback?"):
-            gap_prompt = f"""
-You are an AI assistant reviewing an AI risk workshop's final lines.
-We have discovered coverage on these dimensions:
+        # If you want an LLM-based gap feedback
+        if st.checkbox("Generate LLM Gap Feedback"):
+            prompt = f"""
+You are an AI coverage assistant. The user provided these lines:
+{chr(10).join("- "+l for l in lines)}
 
-- Risk Types covered: {sorted(list(coverage['risk_types_covered']))}
-- Missing risk types: {sorted(list(missed_types))}
-- Stakeholders covered: {sorted(list(coverage['stakeholders_covered']))}
-- Missing stakeholders: {sorted(list(missed_sh))}
-- Clusters covered: {sorted(list(coverage['clusters_covered']))}
-- Missing clusters: {sorted(list(missed_cl))}
+We discovered coverage on:
+ - risk_types covered: {sorted(list(cov['risk_type']))}
+ - missed risk_types: {sorted(list(missed_types))}
+ - stakeholders covered: {sorted(list(cov['node_name']))}
+ - missed stakeholders: {sorted(list(missed_nodes))}
+ - clusters covered: {sorted(list(cov['cluster']))}
+ - missed clusters: {sorted(list(missed_clusters))}
 
-Please provide a concise explanation of:
-1. Why these missing areas might be important.
-2. Suggestions on how to add or expand the analysis in these missed or under-covered categories.
-3. Positive note on what's adequately covered so far.
+Explain why the missing areas might be critical, and how the user might address them, in a short helpful message.
 """
             try:
-                resp = openai.chat.completions.create(
-                    model="gpt-4o",
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
                     messages=[
-                        {"role":"system","content":"You are a helpful coverage feedback assistant."},
-                        {"role":"user","content": gap_prompt}
+                        {"role":"system","content":"You are a helpful coverage analysis assistant."},
+                        {"role":"user","content":prompt}
                     ],
                     max_tokens=300
                 )
-                st.markdown("#### LLM Gap Feedback")
-                st.write(resp.choices[0].message.content)
+                st.markdown("#### LLM Gap Feedback:")
+                st.write(response.choices[0].message.content)
             except Exception as e:
                 st.error(f"OpenAI error: {str(e)}")
 
-#############################
-# 7) Done / Reset
-#############################
+################################################
+# 9) End / Reset
+################################################
 if st.button("Reset Session"):
     for k in ["mural_access_token","mural_refresh_token","mural_expires_in","mural_token_ts","mural_notes"]:
         if k in st.session_state:
             st.session_state.pop(k)
     st.experimental_rerun()
 
-st.info("End of Method 2 demonstration script. Customize as desired.")
+st.info("Done. This script uses single-tab Mural OAuth and coverage analysis for Method 2.")
