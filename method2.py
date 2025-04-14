@@ -1,8 +1,3 @@
-###############################################################################
-# method2.py - Comprehensive: Mural Pull, Advanced Synergy Coverage, Brainstorming, Mitigation
-# No st.experimental_rerun() (uses st.experimental_set_query_params + st.stop)
-###############################################################################
-
 import os
 import json
 import uuid
@@ -126,9 +121,13 @@ def pull_mural_stickies(auth_token, mural_id):
         return []
 
 # Check if we got ?code=... from Mural
-qs = st.experimental_get_query_params()
-auth_code_list = qs.get("code", [])
-auth_code = auth_code_list[0] if isinstance(auth_code_list, list) and auth_code_list else None
+try:
+    auth_code = st.query_params.get("code", [None])[0] if "code" in st.query_params else None
+except AttributeError:
+    # Fallback for older Streamlit versions
+    qs = st.experimental_get_query_params()
+    auth_code_list = qs.get("code", [])
+    auth_code = auth_code_list[0] if isinstance(auth_code_list, list) and auth_code_list else None
 
 if auth_code and not st.session_state.access_token:
     # Exchange code for token
@@ -139,8 +138,11 @@ if auth_code and not st.session_state.access_token:
         st.session_state.token_expires_in = tok_data.get("expires_in", 900)
         st.session_state.token_timestamp = datetime.now().timestamp()
 
-        # Clear ?code=... from the URL
-        st.experimental_set_query_params()
+        # Clear query params from the URL
+        try:
+            st.query_params.clear()
+        except AttributeError:
+            st.experimental_set_query_params()
         st.success("Authenticated with Mural!")
         # Halt now so the user sees success. Next run, we have tokens in session.
         st.stop()
@@ -152,10 +154,12 @@ if st.session_state.access_token:
         refreshed = refresh_access_token(st.session_state.refresh_token)
         if refreshed:
             st.session_state.access_token = refreshed["access_token"]
-            st.session_state.refresh_token = refreshed.get("refresh_token","")
-            st.session_state.token_expires_in = refreshed.get("expires_in",900)
+            st.session_state.refresh_token = refreshed.get("refresh_token", st.session_state.refresh_token)
+            st.session_state.token_expires_in = refreshed.get("expires_in", 900)
             st.session_state.token_timestamp = datetime.now().timestamp()
             st.success("Refreshed Mural token!")
+        else:
+            st.error("Failed to refresh Mural token. Please reauthorize.")
 
 ###############################################################################
 # 4) Sidebar Mural Actions
@@ -363,4 +367,4 @@ if st.button("Check Semantic Coverage"):
         except Exception as e:
             st.error(f"Semantic coverage error: {str(e)}")
 
-st.info("All done! This script uses st.experimental_set_query_params + st.stop instead of st.experimental_rerun.")
+st.info("All done! This script uses st.query_params + st.stop instead of st.experimental_rerun.")
