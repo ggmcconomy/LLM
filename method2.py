@@ -237,7 +237,7 @@ if "mural_access_token" not in st.session_state:
     st.session_state["mural_token_expires"] = None
     st.session_state["mural_token_ts"] = None
 
-# Replace experimental_get_query_params => st.query_params
+# Get query parameters
 qs_params = st.query_params
 auth_code = qs_params.get("code", None)
 
@@ -251,11 +251,9 @@ if auth_code and not st.session_state["mural_access_token"]:
         st.session_state["mural_token_ts"] = time.time()
         
         # Clear the query param "code"
-        # Instead of experimental_set_query_params => st.set_query_params()
-        st.set_query_params()  # no args => clear all
+        st.query_params.clear()  # FIXED: Replaced st.set_query_params()
         
         st.success("Authenticated with Mural in the same tab!")
-        # Instead of experimental_rerun => st.rerun()
         st.rerun()
 
 # If no access token yet, provide user with link
@@ -347,7 +345,7 @@ with st.sidebar:
             st.error(f"Error: {e}")
     if st.button("Clear Session"):
         st.session_state.clear()
-        st.set_query_params()  # clear URL
+        st.query_params.clear()  # clear URL
         st.rerun()
 
 ###############################################################
@@ -427,7 +425,7 @@ if st.button("Analyze Coverage"):
                 except FileNotFoundError:
                     pass
 
-            # Example: fix line 463 with a complete f-string
+            # Example: show neighbor distances
             st.write("### Example neighbor distances")
             # For demonstration, let's show each line's top neighbor
             for i, line_i in enumerate(lines):
@@ -436,8 +434,5 @@ if st.button("Analyze Coverage"):
                 st.write(f"**Input {i+1}**: {line_i}")
                 for rank, (dist_v, idx_v) in enumerate(zip(dists, idxs), start=1):
                     row_ = df.iloc[idx_v]
-                    # FIX the incomplete f-string:
-                    # Before: st.write(f"{rank}) {row_['risk_description']} (dist
-                    # After -> close parentheses properly, e.g.:
                     st.write(f"{rank}) {row_['risk_description']} (distance={dist_v:.3f})")
                 st.write("---")
