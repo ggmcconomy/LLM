@@ -1,11 +1,3 @@
-#############################################################
-# method2.py
-#
-# Re-uses your existing pipeline code for Mural connection,
-# but changes the CSV to "clean_risks.csv" and adds a RAG table
-# for improved gap visuals. Otherwise the Mural OAuth logic is unchanged.
-#############################################################
-
 import os
 import json
 import uuid
@@ -22,166 +14,143 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import Counter
 import re
+import time
 
 # Temporarily disable torch.classes to avoid Streamlit watcher error
 sys.modules['torch.classes'] = None
 
-# For embeddings + coverage checks
 from sentence_transformers import SentenceTransformer
 import faiss
 from openai import OpenAI
 
-#############################################################
-# --- Configuration & Page ---
-#############################################################
-st.set_page_config(page_title="Method 2 - AI Risk Coverage & Brainstorming", layout="wide")
-st.title("🤖 AI Risk Analysis Dashboard - Method 2 (Using Mural + clean_risks.csv)")
+###############################################################
+# Config
+###############################################################
+st.set_page_config(page_title="Method 2 - Demo", layout="wide")
+st.title("Method 2 - AI Risk Coverage & Brainstorming (No experimental_)")
 
-#############################################################
-# 1) Load secrets
-#############################################################
+###############################################################
+# Load secrets
+###############################################################
 try:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     MURAL_CLIENT_ID = st.secrets["MURAL_CLIENT_ID"]
     MURAL_CLIENT_SECRET = st.secrets["MURAL_CLIENT_SECRET"]
     MURAL_BOARD_ID = st.secrets["MURAL_BOARD_ID"]
     MURAL_REDIRECT_URI = st.secrets["MURAL_REDIRECT_URI"]
-    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID", "aiimpacttesting2642")
+    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID", "myworkspaceid")
 except KeyError as e:
     st.error(f"Missing secret: {e}. Please configure secrets in .streamlit/secrets.toml.")
     st.stop()
 
-# Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-#############################################################
-# 2) Utility Functions
-#############################################################
+###############################################################
+# Utility
+###############################################################
 def normalize_mural_id(mural_id, workspace_id=MURAL_WORKSPACE_ID):
-    """Strip workspace prefix from mural ID if present."""
     prefix = f"{workspace_id}."
     if mural_id.startswith(prefix):
         return mural_id[len(prefix):]
     return mural_id
 
 def clean_html_text(html_text):
-    """Strip HTML tags and clean text."""
     if not html_text:
         return ""
     try:
         soup = BeautifulSoup(html_text, "html.parser")
-        text = soup.get_text(separator=" ").strip()
-        return text if text else ""
+        return soup.get_text(separator=" ").strip()
     except Exception as e:
-        st.error(f"Error cleaning HTML: {str(e)}")
+        st.error(f"HTML cleanup error: {e}")
         return ""
 
 def log_feedback(risk_description, user_feedback, disagreement_reason=""):
-    """Log user feedback to CSV."""
-    feedback_data = {
+    data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "risk_description": risk_description,
         "user_feedback": user_feedback,
         "disagreement_reason": disagreement_reason
     }
-    feedback_df = pd.DataFrame([feedback_data])
-    feedback_file = "feedback_log.csv"
-    try:
-        if os.path.exists(feedback_file):
-            existing_df = pd.read_csv(feedback_file)
-            feedback_df = pd.concat([existing_df, feedback_df], ignore_index=True)
-        feedback_df.to_csv(feedback_file, index=False)
-    except Exception as e:
-        st.error(f"Error logging feedback: {str(e)}")
+    df_log = pd.DataFrame([data])
+    filename = "feedback_log.csv"
+    if os.path.exists(filename):
+        old_df = pd.read_csv(filename)
+        df_log = pd.concat([old_df, df_log], ignore_index=True)
+    df_log.to_csv(filename, index=False)
 
 def color_cell(val):
-    """
-    Simple RAG scale for coverage:
-     0 => Red
-     1..2 => Amber
-     >=3 => Green
-    """
+    """Example RAG scale."""
     if val == 0:
         return "background-color:#e74c3c; color:white"
-    elif 1 <= val <=2:
+    elif 1 <= val <= 2:
         return "background-color:#f39c12; color:white"
     else:
         return "background-color:#2ecc71; color:white"
 
+###############################################################
+# Coverage Chart Example
+###############################################################
 def create_coverage_chart(title, categories, covered_counts, missed_counts, filename):
-    """Create a single bar chart for coverage."""
+    """Same bar chart logic, no changes needed."""
     try:
-        plt.figure(figsize=(6, 4))
+        plt.figure(figsize=(6,4))
         x = np.arange(len(categories))
         plt.bar(x - 0.2, covered_counts, 0.4, label='Covered', color='#2ecc71')
         plt.bar(x + 0.2, missed_counts, 0.4, label='Missed', color='#e74c3c')
-        plt.xlabel(title.split(' ')[-1])
-        plt.ylabel('Count')
-        plt.title(title)
         plt.xticks(x, categories, rotation=45, ha='right')
+        plt.title(title)
         plt.legend()
         plt.tight_layout()
         plt.savefig(filename)
         plt.close()
-        return True
     except Exception as e:
-        st.error(f"Error creating chart {filename}: {str(e)}")
-        return False
+        st.error(f"Error: {e}")
 
 def create_coverage_charts(covered_stakeholders, missed_stakeholders,
                            covered_types, missed_types,
                            covered_subtypes, missed_subtypes,
                            top_n_subtypes=5):
-    """Create bar charts for coverage visualization."""
+    """Generate coverage bar charts."""
     try:
         plt.style.use('ggplot')
-    except Exception as e:
-        st.warning(f"ggplot style failed: {str(e)}. Using default style.")
-        plt.style.use('default')
+    except:
+        pass
 
-    # Stakeholder Chart
-    stakeholders = sorted(set(covered_stakeholders + missed_stakeholders))
-    covered_counts = [covered_stakeholders.count(s) for s in stakeholders]
-    missed_counts = [missed_stakeholders.count(s) for s in stakeholders]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    stakeholders = [stakeholders[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if stakeholders:
-        create_coverage_chart("Stakeholder Coverage Gaps", stakeholders, covered_counts, missed_counts, 'stakeholder_coverage.png')
-    else:
-        st.warning("No stakeholder data to display.")
+    # 1) Stakeholders
+    all_st = sorted(set(covered_stakeholders + missed_stakeholders))
+    cov_ct = [covered_stakeholders.count(s) for s in all_st]
+    mis_ct = [missed_stakeholders.count(s) for s in all_st]
+    # Filter out zero everything
+    nz_index = [i for i,(c,m) in enumerate(zip(cov_ct, mis_ct)) if c>0 or m>0]
+    all_st = [all_st[i] for i in nz_index]
+    cov_ct = [cov_ct[i] for i in nz_index]
+    mis_ct = [mis_ct[i] for i in nz_index]
+    if all_st:
+        create_coverage_chart("Stakeholder Coverage Gaps", all_st, cov_ct, mis_ct, 'stakeholder_coverage.png')
 
-    # Risk Type Chart
-    risk_types = sorted(set(covered_types + missed_types))
-    covered_counts = [covered_types.count(t) for t in risk_types]
-    missed_counts = [missed_types.count(t) for t in risk_types]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    risk_types = [risk_types[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if risk_types:
-        create_coverage_chart("Risk Type Coverage Gaps", risk_types, covered_counts, missed_counts, 'risk_type_coverage.png')
-    else:
-        st.warning("No risk type data to display.")
+    # 2) Risk Types
+    all_ty = sorted(set(covered_types + missed_types))
+    cov_ty = [covered_types.count(t) for t in all_ty]
+    mis_ty = [missed_types.count(t) for t in all_ty]
+    nz_index = [i for i,(c,m) in enumerate(zip(cov_ty, mis_ty)) if c>0 or m>0]
+    all_ty = [all_ty[i] for i in nz_index]
+    cov_ty = [cov_ty[i] for i in nz_index]
+    mis_ty = [mis_ty[i] for i in nz_index]
+    if all_ty:
+        create_coverage_chart("Risk Type Coverage Gaps", all_ty, cov_ty, mis_ty, 'risk_type_coverage.png')
 
-    # Risk Subtype Chart (Top N Missed Only)
-    subtype_counts = Counter(missed_subtypes)
-    top_missed_subtypes = [subtype for subtype, _ in subtype_counts.most_common(top_n_subtypes)]
-    covered_counts = [covered_subtypes.count(s) for s in top_missed_subtypes]
-    missed_counts = [missed_subtypes.count(s) for s in top_missed_subtypes]
-    
-    if top_missed_subtypes:
-        create_coverage_chart(f"Top {top_n_subtypes} Overlooked Risk Subtype Gaps", top_missed_subtypes, covered_counts, missed_counts, 'risk_subtype_coverage.png')
-    else:
-        st.warning("No risk subtype data to display.")
+    # 3) Risk Subtypes
+    st_counter = Counter(missed_subtypes)
+    top_missed = [k for k,_ in st_counter.most_common(top_n_subtypes)]
+    cov_sub = [covered_subtypes.count(s) for s in top_missed]
+    mis_sub = [missed_subtypes.count(s) for s in top_missed]
+    if top_missed:
+        create_coverage_chart(f"Top {top_n_subtypes} Overlooked Subtypes", top_missed, cov_sub, mis_sub, 'risk_subtype_coverage.png')
 
-#############################################################
-# --- OAuth Functions ---
-#############################################################
-def get_authorization_url():
+###############################################################
+# Mural OAuth
+###############################################################
+def get_mural_auth_url():
     params = {
         "client_id": MURAL_CLIENT_ID,
         "redirect_uri": MURAL_REDIRECT_URI,
@@ -191,28 +160,27 @@ def get_authorization_url():
     }
     return f"https://app.mural.co/api/public/v1/authorization/oauth2/?{urlencode(params)}"
 
-def exchange_code_for_token(code):
+def exchange_code_for_token(auth_code):
     with st.spinner("Authenticating with Mural..."):
         url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
         data = {
             "client_id": MURAL_CLIENT_ID,
             "client_secret": MURAL_CLIENT_SECRET,
             "redirect_uri": MURAL_REDIRECT_URI,
-            "code": code,
+            "code": auth_code,
             "grant_type": "authorization_code"
         }
         try:
-            response = requests.post(url, data=data, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                st.error(f"Authentication failed: {response.status_code}")
-                return None
+            resp = requests.post(url, data=data, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+            st.error(f"Mural auth failed. Status: {resp.status_code}")
+            return None
         except Exception as e:
-            st.error(f"Authentication error: {str(e)}")
+            st.error(f"Mural auth error: {e}")
             return None
 
-def refresh_access_token(refresh_token):
+def refresh_mural_token(refresh_token):
     with st.spinner("Refreshing Mural token..."):
         url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
         data = {
@@ -222,251 +190,254 @@ def refresh_access_token(refresh_token):
             "grant_type": "refresh_token"
         }
         try:
-            response = requests.post(url, data=data, timeout=10)
-            if response.status_code == 200:
-                return response.json()
+            resp = requests.post(url, data=data, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
             else:
-                st.error(f"Token refresh failed: {response.status_code}")
+                st.error(f"Token refresh error: {resp.status_code}")
                 return None
         except Exception as e:
-            st.error(f"Token refresh error: {str(e)}")
+            st.error(f"Refresh error: {e}")
             return None
 
-#############################################################
-# 3) Mural API
-#############################################################
-def list_murals(auth_token):
+def list_murals(token):
     url = "https://app.mural.co/api/public/v1/murals"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {auth_token}"
-    }
+    headers = {"Authorization": f"Bearer {token}", "Accept":"application/json"}
     try:
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        response = session.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json().get("value", [])
-        else:
-            st.error(f"Failed to list murals: {response.status_code}")
-            return []
+        s = requests.Session()
+        retr = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
+        s.mount("https://", HTTPAdapter(max_retries=retr))
+        r = s.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return r.json().get("value", [])
+        st.error(f"List murals failed: {r.status_code}")
+        return []
     except Exception as e:
-        st.error(f"Error listing murals: {str(e)}")
+        st.error(f"list_murals error: {e}")
         return []
 
-def verify_mural(auth_token, mural_id):
+def verify_mural(token, mural_id):
     url = f"https://app.mural.co/api/public/v1/murals/{mural_id}"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {auth_token}"
-    }
+    headers = {"Authorization": f"Bearer {token}"}
     try:
-        session = requests.Session()
-        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        response = session.get(url, headers=headers, timeout=10)
-        return response.status_code == 200
-    except Exception as e:
-        st.error(f"Error verifying mural: {str(e)}")
+        s = requests.Session()
+        retr = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
+        s.mount("https://", HTTPAdapter(max_retries=retr))
+        r = s.get(url, headers=headers, timeout=10)
+        return (r.status_code == 200)
+    except:
         return False
 
-#############################################################
-# --- Handle OAuth Flow ---
-#############################################################
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
-    st.session_state.refresh_token = None
-    st.session_state.token_expires_in = None
-    st.session_state.token_timestamp = None
+###############################################################
+# Session State for Mural
+###############################################################
+if "mural_access_token" not in st.session_state:
+    st.session_state["mural_access_token"] = None
+    st.session_state["mural_refresh_token"] = None
+    st.session_state["mural_token_expires"] = None
+    st.session_state["mural_token_ts"] = None
 
-query_params = st.query_params
-auth_code = query_params.get("code")
-if auth_code and not st.session_state.access_token:
+# Replace experimental_get_query_params => st.query_params
+qs_params = st.query_params
+auth_code = qs_params.get("code", None)
+
+if auth_code and not st.session_state["mural_access_token"]:
+    # We have an auth_code in URL, let's exchange
     token_data = exchange_code_for_token(auth_code)
     if token_data:
-        st.session_state.access_token = token_data["access_token"]
-        st.session_state.refresh_token = token_data.get("refresh_token")
-        st.session_state.token_expires_in = token_data.get("expires_in", 900)
-        st.session_state.token_timestamp = pd.Timestamp.now().timestamp()
-        st.set_query_params()  # remove code
-        st.success("Authenticated with Mural!")
+        st.session_state["mural_access_token"] = token_data["access_token"]
+        st.session_state["mural_refresh_token"] = token_data.get("refresh_token")
+        st.session_state["mural_token_expires"] = token_data.get("expires_in", 900)
+        st.session_state["mural_token_ts"] = time.time()
+        
+        # Clear the query param "code"
+        # Instead of experimental_set_query_params => st.set_query_params()
+        st.set_query_params()  # no args => clear all
+        
+        st.success("Authenticated with Mural in the same tab!")
+        # Instead of experimental_rerun => st.rerun()
         st.rerun()
 
-if not st.session_state.access_token:
-    auth_url = get_authorization_url()
-    st.markdown(f"Please [authorize the app]({auth_url}) to access Mural.")
-    st.info("Click the link above, log into Mural, and authorize.")
+# If no access token yet, provide user with link
+if not st.session_state["mural_access_token"]:
+    mural_auth_url = get_mural_auth_url()
+    st.markdown(f"[Click here to authorize Mural access]({mural_auth_url})")
     st.stop()
 
-if st.session_state.access_token:
-    current_time = pd.Timestamp.now().timestamp()
-    if (current_time - st.session_state.token_timestamp) > (st.session_state.token_expires_in - 60):
-        token_data = refresh_access_token(st.session_state.refresh_token)
-        if token_data:
-            st.session_state.access_token = token_data["access_token"]
-            st.session_state.refresh_token = token_data.get("refresh_token", st.session_state.refresh_token)
-            st.session_state.token_expires_in = token_data.get("expires_in", 900)
-            st.session_state.token_timestamp = pd.Timestamp.now().timestamp()
+# If we do have a token, check expiry
+if st.session_state["mural_access_token"]:
+    now_ts = time.time()
+    # If token older than (expires_in - 60), refresh
+    if (now_ts - st.session_state["mural_token_ts"]) > (st.session_state["mural_token_expires"] - 60):
+        newdata = refresh_mural_token(st.session_state["mural_refresh_token"])
+        if newdata:
+            st.session_state["mural_access_token"] = newdata["access_token"]
+            st.session_state["mural_refresh_token"] = newdata.get("refresh_token", st.session_state["mural_refresh_token"])
+            st.session_state["mural_token_expires"] = newdata.get("expires_in", 900)
+            st.session_state["mural_token_ts"] = time.time()
+            st.info("Refreshed Mural token")
 
-#############################################################
-# --- Load "clean_risks.csv" ---
-#############################################################
-csv_file = 'clean_risks.csv'  # <--- CHANGED to "clean_risks.csv"
-embeddings_file = 'embeddings.npy'
-index_file = 'faiss_index.faiss'
+###############################################################
+# Load CSV
+###############################################################
+csv_file = "clean_risks.csv"
+embeds_file = "embeddings.npy"
+index_file = "faiss_index.faiss"
 
 try:
     df = pd.read_csv(csv_file)
-    if 'overlooked_label' in df.columns:
-        df = df.drop(columns=['overlooked_label'])
-    numeric_columns = ['severity', 'probability', 'combined_score']
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            if df[col].isna().any():
-                non_numeric_rows = df[df[col].isna()].index.tolist()
-                st.warning(f"Non-numeric values found in {col} at rows: {non_numeric_rows}. Converted to NaN.")
 except FileNotFoundError:
-    st.error(f"Clean CSV {csv_file} not found. Please run Method 1 first.")
+    st.error(f"Missing CSV: {csv_file}")
     st.stop()
 
 try:
-    csv_embeddings = np.load(embeddings_file)
+    embeddings = np.load(embeds_file)
 except FileNotFoundError:
-    st.error(f"Embeddings file {embeddings_file} not found. Please run the embedding step first.")
+    st.error(f"Missing embeddings: {embeds_file}")
     st.stop()
 
 try:
     index = faiss.read_index(index_file)
 except FileNotFoundError:
-    st.error(f"Index file {index_file} not found. Please run the embedding step first.")
+    st.error(f"Missing FAISS index: {index_file}")
     st.stop()
 
-# Initialize embedder
-embedder = SentenceTransformer('all-MiniLM-L6-v2')
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-#############################################################
-# --- Domain coverage logic (unchanged, or minimal changes) ---
-#############################################################
+###############################################################
+# Sidebar
+###############################################################
+with st.sidebar:
+    st.header("Mural Tools")
+    custom_mural_id = st.text_input("Optional Mural ID", value=MURAL_BOARD_ID)
+    if st.button("List Murals"):
+        ms = list_murals(st.session_state["mural_access_token"])
+        st.write(ms if ms else "No murals found.")
+    if st.button("Pull Stickies"):
+        # Example: pull sticky notes from Mural
+        try:
+            token = st.session_state["mural_access_token"]
+            real_id = custom_mural_id.strip()
+            # Verify
+            if not verify_mural(token, real_id):
+                real_id = normalize_mural_id(real_id)
+                if not verify_mural(token, real_id):
+                    st.error("Cannot find mural.")
+                    st.stop()
+            w_url = f"https://app.mural.co/api/public/v1/murals/{real_id}/widgets"
+            h = {"Authorization":f"Bearer {token}"}
+            s = requests.Session()
+            retr = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
+            s.mount("https://", HTTPAdapter(max_retries=retr))
+            r = s.get(w_url, headers=h, timeout=10)
+            if r.status_code==200:
+                widgets = r.json().get("value", [])
+                sticky_items = []
+                for w_ in widgets:
+                    if w_.get("type","").lower()=="sticky_note":
+                        raw = w_.get("htmlText") or w_.get("text","")
+                        cleaned = clean_html_text(raw)
+                        if cleaned:
+                            sticky_items.append(cleaned)
+                st.session_state["mural_notes"] = sticky_items
+                st.success(f"Pulled {len(sticky_items)} sticky notes!")
+            else:
+                st.error(f"Pull stickies: {r.status_code}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+    if st.button("Clear Session"):
+        st.session_state.clear()
+        st.set_query_params()  # clear URL
+        st.rerun()
 
-st.sidebar.header("🔧 Settings")
-num_clusters = st.sidebar.slider("Number of Clusters (Themes)", 5, 20, 10)
-severity_threshold = st.sidebar.slider("Severity Threshold", 0.0, 5.0, 4.0, 0.5)
+###############################################################
+# Main
+###############################################################
+st.subheader("1) Enter/Load Finalized Risks")
+default_text = ""
+if "mural_notes" in st.session_state:
+    default_text = "\n".join(st.session_state["mural_notes"])
+user_input = st.text_area("Risks from Mural or manual", value=default_text, height=200)
 
-st.markdown("---")
-st.subheader("1️⃣ Input Risks")
-st.write("Pull finalized risks from Mural or edit below to analyze coverage.")
-
-default_notes = st.session_state.get('mural_notes', [])
-default_text = "\n".join(default_notes) if default_notes else ""
-user_input = st.text_area("", value=default_text, height=200, placeholder="Enter risks, one per line.")
-
-#############################################################
-# --- Generate Coverage Feedback (with new CSV) ---
-#############################################################
-st.subheader("2️⃣ Coverage Feedback")
-st.write("Analyze gaps in your risk coverage with examples from 'clean_risks.csv'.")
-
-top_n_subtypes = st.slider("Top N Overlooked Subtypes to Display", 3, 10, 5)
-if st.button("🔍 Generate Coverage Feedback"):
+st.subheader("2) Coverage Analysis")
+if st.button("Analyze Coverage"):
     with st.spinner("Analyzing coverage..."):
-        if user_input.strip():
-            try:
-                human_risks = [r.strip() for r in user_input.split('\n') if r.strip()]
-                human_embeddings = np.array(embedder.encode(human_risks))
-                distances, indices = index.search(human_embeddings, 5)
-                similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
-
-                # Analyze coverage
-                covered_types = {r['risk_type'] for r in similar_risks if 'risk_type' in r}
-                covered_subtypes = {r['risk_subtype'] for r in similar_risks if 'risk_subtype' in r}
-                covered_stakeholders = {r['stakeholder'] for r in similar_risks if 'stakeholder' in r}
-
-                # Missed
-                all_types = df['risk_type'].dropna().unique()
-                all_subtypes = df['risk_subtype'].dropna().unique() if 'risk_subtype' in df.columns else []
-                all_stakeholders = df['stakeholder'].dropna().unique() if 'stakeholder' in df.columns else []
-
-                missed_types = sorted(list(set(all_types) - covered_types))
-                missed_subtypes = sorted(list(set(all_subtypes) - covered_subtypes))
-                missed_stakeholders = sorted(list(set(all_stakeholders) - covered_stakeholders))
-
-                # Prepare coverage visuals
-                st.write(f"**Covered Risk Types**: {sorted(list(covered_types))}, Missed: {missed_types}")
-                st.write(f"**Covered Subtypes**: {sorted(list(covered_subtypes))}, Missed: {missed_subtypes}")
-                st.write(f"**Covered Stakeholders**: {sorted(list(covered_stakeholders))}, Missed: {missed_stakeholders}")
-
-                # Create coverage charts
-                create_coverage_charts(
-                    list(covered_stakeholders), missed_stakeholders,
-                    list(covered_types), missed_types,
-                    list(covered_subtypes), missed_subtypes,
-                    top_n_subtypes=top_n_subtypes
-                )
-
-                # Show newly generated images
-                col1, col2, col3 = st.columns(3)
-                try:
-                    with col1:
-                        st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_column_width=True)
-                    with col2:
-                        st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_container_width=True)
-                    with col3:
-                        st.image("risk_subtype_coverage.png", caption="Top Overlooked Subtype Gaps", use_container_width=True)
-                except FileNotFoundError:
-                    st.warning("No coverage images. Try again?")
-
-                # Example LLM feedback
-                domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
-                prompt = f"""
-                You are an AI risk analysis expert for {domain}. The user has identified these final lines:
-                {chr(10).join("- "+r for r in human_risks)}
-
-                We see coverage on:
-                - risk_types covered: {sorted(list(covered_types))}
-                - missed: {missed_types}
-                - subtypes covered: {sorted(list(covered_subtypes))}
-                - missed: {missed_subtypes}
-                - stakeholders covered: {sorted(list(covered_stakeholders))}
-                - missed: {missed_stakeholders}
-
-                Provide a short gap analysis, focusing on why the missed areas matter and how to improve coverage.
-                """
-
-                try:
-                    response = openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": "You are a helpful coverage feedback assistant."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        max_tokens=300
-                    )
-                    st.markdown("### LLM Gap Feedback:")
-                    st.write(response.choices[0].message.content)
-
-                except Exception as e:
-                    st.error(f"OpenAI error: {str(e)}")
-
-            except Exception as e:
-                st.error(f"Error processing coverage: {str(e)}")
+        lines = [ln.strip() for ln in user_input.split("\n") if ln.strip()]
+        if not lines:
+            st.warning("No input lines found.")
         else:
-            st.warning("Please enter or pull some risks first.")
+            # Encode & search
+            vecs = embedder.encode(lines)
+            vecs = np.array(vecs, dtype="float32")
+            distances, idx = index.search(vecs, 3)  # top-3 neighbors
+            # Let's gather coverage info from df
+            # For each line, find neighbors' risk_type, risk_subtype, stakeholder
+            all_covered_types = set()
+            all_covered_subtypes = set()
+            all_covered_stakeholders = set()
 
-#############################################################
-# 4) Coverage Visualization (If stored in session?)
-#############################################################
-# Similar to your snippet's code.
+            for row_i in idx.flatten():
+                row_info = df.iloc[row_i].to_dict()
+                if "risk_type" in row_info and pd.notna(row_info["risk_type"]):
+                    all_covered_types.add(row_info["risk_type"])
+                if "risk_subtype" in row_info and pd.notna(row_info["risk_subtype"]):
+                    all_covered_subtypes.add(row_info["risk_subtype"])
+                if "stakeholder" in row_info and pd.notna(row_info["stakeholder"]):
+                    all_covered_stakeholders.add(row_info["stakeholder"])
 
-# --- Additional Brainstorm / Mitigation if needed... ---
-# (Omitted or add if you want)
+            all_types = df["risk_type"].dropna().unique().tolist()
+            all_subs = df["risk_subtype"].dropna().unique().tolist() if "risk_subtype" in df.columns else []
+            all_stkh = df["stakeholder"].dropna().unique().tolist() if "stakeholder" in df.columns else []
 
-#############################################################
-# 5) Clean Up
-#############################################################
-st.subheader("Done.")
-if st.button("🗑 Clear Session"):
-    st.session_state.clear()
-    st.set_query_params()  # remove code param
-    st.rerun()
+            missed_types = sorted(list(set(all_types) - all_covered_types))
+            missed_subs = sorted(list(set(all_subs) - all_covered_subtypes))
+            missed_stkh = sorted(list(set(all_stkh) - all_covered_stakeholders))
+
+            # Show them
+            st.write("**Coverage**")
+            st.write("Covered risk types:", list(all_covered_types))
+            st.write("Missed risk types:", missed_types)
+            st.write("Covered subtypes:", list(all_covered_subtypes))
+            st.write("Missed subtypes:", missed_subs)
+            st.write("Covered stakeholders:", list(all_covered_stakeholders))
+            st.write("Missed stakeholders:", missed_stkh)
+
+            create_coverage_charts(
+                list(all_covered_stakeholders), missed_stkh,
+                list(all_covered_types), missed_types,
+                list(all_covered_subtypes), missed_subs,
+                top_n_subtypes=5
+            )
+
+            # Attempt to display the charts
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                try:
+                    st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_column_width=True)
+                except FileNotFoundError:
+                    pass
+            with col2:
+                try:
+                    st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_column_width=True)
+                except FileNotFoundError:
+                    pass
+            with col3:
+                try:
+                    st.image("risk_subtype_coverage.png", caption="Subtype Gaps", use_column_width=True)
+                except FileNotFoundError:
+                    pass
+
+            # Example: fix line 463 with a complete f-string
+            st.write("### Example neighbor distances")
+            # For demonstration, let's show each line's top neighbor
+            for i, line_i in enumerate(lines):
+                dists = distances[i]
+                idxs = idx[i]
+                st.write(f"**Input {i+1}**: {line_i}")
+                for rank, (dist_v, idx_v) in enumerate(zip(dists, idxs), start=1):
+                    row_ = df.iloc[idx_v]
+                    # FIX the incomplete f-string:
+                    # Before: st.write(f"{rank}) {row_['risk_description']} (dist
+                    # After -> close parentheses properly, e.g.:
+                    st.write(f"{rank}) {row_['risk_description']} (distance={dist_v:.3f})")
+                st.write("---")
