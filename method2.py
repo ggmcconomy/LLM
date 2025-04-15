@@ -402,6 +402,16 @@ except FileNotFoundError:
     st.error(f"Clustered CSV {csv_file} not found. Please run generate_clustered_files.py first.")
     st.stop()
 
+# Check for required columns
+required_columns = ['node_name', 'subtype', 'risk_type', 'time_horizon', 'driver', 'risk_description', 'severity']
+missing_columns = [col for col in required_columns if col not in df.columns]
+if missing_columns:
+    st.error(f"Missing required columns: {missing_columns}")
+    st.stop()
+
+# Rename columns to match expected names
+df = df.rename(columns={'node_name': 'stakeholder', 'subtype': 'risk_subtype'})
+
 try:
     csv_embeddings = np.load(embeddings_file)
 except FileNotFoundError:
@@ -517,13 +527,7 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                 # Identify underrepresented areas
                 human_risk_types = [r['risk_type'] for r in similar_risks]
-                human_subtypes = [r['risk_subtype'] for r in similar_risks]
-                human_stakeholders = [r['stakeholder'] for r in similar_risks]
-                human_horizons = [r['time_horizon'] for r in similar_risks]
-                human_drivers = [r['driver'] for r in similar_risks]
-                human_clusters = [r['cluster'] for r in similar_risks]
-
-                underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
+                Amequnderrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
                 underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
                 underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
                 underrepresented_horizons = [h for h in df['time_horizon'].unique() if human_horizons.count(h) < df['time_horizon'].value_counts()[h] * 0.1]
