@@ -251,7 +251,7 @@ if auth_code and not st.session_state["mural_access_token"]:
         st.session_state["mural_access_token"] = token_data["access_token"]
         st.session_state["mural_refresh_token"] = token_data.get("refresh_token")
         st.session_state["mural_token_expires"] = token_data.get("expires_in", 900)
-        st.session_state["mural_token Ministries = time.time()
+        st.session_state["mural_token_ts"] = time.time()
         
         # Clear the query param "code"
         st.query_params.clear()
