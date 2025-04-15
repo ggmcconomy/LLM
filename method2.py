@@ -605,12 +605,21 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 filt = filt[filt['stakeholder'] == stakeholder]
             if risk_type != "Any":
                 filt = filt[filt['risk_type'] == risk_type]
+
+            if filt.empty:
+                st.error("No risks found for the selected stakeholder or risk type. Please adjust your filters.")
+                st.stop()
+
             top_suggestions = filt.sort_values(by='combined_score', ascending=False).head(num_brainstorm_risks)
+
+            if top_suggestions.empty:
+                st.error("No top suggestions available after filtering. Please try different filters.")
+                st.stop()
 
             suggestions = "\n".join(
                 f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, "
                 f"Stakeholder: {r['stakeholder']}, Time Horizon: {r['time_horizon']}, Driver: {r['driver']})"
-                for r in top_suggestions.to_dict('records')
+                for _, r in top_suggestions.iterrows()
             )
 
             domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
@@ -621,33 +630,44 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
 
             Generate {num_brainstorm_risks} new risk suggestions to broaden the risk analysis. Focus on diverse, overlooked risks that complement the existing ones. For each suggestion, include:
             - A concise risk description
-            - Risk Type
-            - Risk Subtype
+            - Risk Type (choose from: Technical, Financial, Ethical, Operational, Regulatory, Social, Legal)
+            - Risk Subtype (e.g., Data Bias, Algorithm Error for Technical; Fairness Issue, Privacy Violation for Ethical)
             - Stakeholder
-            - Time Horizon
-            - Driver
+            - Time Horizon (choose from: Short-term, Medium-term, Long-term)
+            - Driver (choose from: Technological, Human Error, Regulatory, Market Shift, Operational, Financial, Ethical, Lack of Accountability, Insufficient Redress Mechanisms, Data Quality Issues, Lack of Transparency)
             - Why it matters
 
-            Format each suggestion as:
+            Format each suggestion EXACTLY as:
             - Risk: [description] (Type: [type], Subtype: [subtype], Stakeholder: [stakeholder], Time Horizon: [horizon], Driver: [driver], Why it matters: [reason])
+
+            Ensure each suggestion is unique and relevant to the domain.
             """
 
-            response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are a creative AI risk brainstorming assistant."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            brainstorm_output = response.choices[0].message.content
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are a creative AI risk brainstorming assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=1000
+                )
+                brainstorm_output = response.choices[0].message.content
+                st.write("**Raw LLM Response (for debugging):**")
+                st.text(brainstorm_output)  # Debug output
+            except Exception as e:
+                st.error(f"Failed to generate suggestions due to API error: {str(e)}")
+                st.stop()
 
             brainstorm_suggestions = [s.strip() for s in brainstorm_output.split('\n') if s.strip().startswith('- Risk:')]
             brainstorm_suggestions = [s[2:].strip() for s in brainstorm_suggestions]
 
             if not brainstorm_suggestions:
-                st.warning("No suggestions were generated.")
-            else:
-                st.session_state['brainstorm_suggestions'] = brainstorm_suggestions[:num_brainstorm_risks]
+                st.error("No suggestions were generated. The LLM response did not match the expected format. Please check the raw response above for clues.")
+                st.stop()
+
+            st.session_state['brainstorm_suggestions'] = brainstorm_suggestions[:num_brainstorm_risks]
 
         except Exception as e:
             st.error(f"Error generating risk suggestions: {str(e)}")
