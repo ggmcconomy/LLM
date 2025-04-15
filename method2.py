@@ -527,7 +527,13 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                 # Identify underrepresented areas
                 human_risk_types = [r['risk_type'] for r in similar_risks]
-                Amequnderrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
+                human_subtypes = [r['risk_subtype'] for r in similar_risks]
+                human_stakeholders = [r['stakeholder'] for r in similar_risks]
+                human_horizons = [r['time_horizon'] for r in similar_risks]
+                human_drivers = [r['driver'] for r in similar_risks]
+                human_clusters = [r['cluster'] for r in similar_risks]
+
+                underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
                 underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
                 underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
                 underrepresented_horizons = [h for h in df['time_horizon'].unique() if human_horizons.count(h) < df['time_horizon'].value_counts()[h] * 0.1]
@@ -539,7 +545,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                 for category, items in [
                     ("Missed Risk Types", missed_types),
                     ("Missed Risk Subtypes", missed_subtypes),
-                    ("Missed Stakeholders", missed_stakeholders),
+                    ("Missed Stakeholders", Missed_stakeholders),
                     ("Missed Time Horizons", missed_horizons),
                     ("Missed Drivers", missed_drivers),
                     ("Missed Clusters", missed_clusters),
@@ -749,7 +755,59 @@ if 'brainstorm_suggestions' in st.session_state and st.session_state['brainstorm
     st.markdown("### Brainstormed Risk Suggestions:")
     st.write("Vote on creative risk ideas to add to Mural, or disagree with a reason.")
     
-    for idx, suggestion in enumerate(st.session_state['brainstorm_suggestions']):
+ BACKGROUND_COLOR = '#1a1a1a'  # Dark gray background
+TEXT_COLOR = '#f0f0f0'        # Light gray text
+BUTTON_COLOR = '#4CAF50'      # Green button color
+BUTTON_HOVER_COLOR = '#45a049'  # Darker green for hover
+ERROR_COLOR = '#ff4d4d'       # Red for errors
+WARNING_COLOR = '#ffcc00'     # Yellow for warnings
+INFO_COLOR = '#00ccff'        # Cyan for info
+
+# Apply custom CSS
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background-color: {BACKGROUND_COLOR};
+        color: {TEXT_COLOR};
+    }}
+    .stButton>button {{
+        background-color: {BUTTON_COLOR};
+        color: white;
+        border-radius: 5px;
+        padding: 0.5em 1em;
+        border: none;
+    }}
+    .stButton>button:hover {{
+        background-color: {BUTTON_HOVER_COLOR};
+    }}
+    .stTextInput>div>input, .stTextArea>div>textarea {{
+        background-color: #2a2a2a;
+        color: {TEXT_COLOR};
+        border: 1px solid #555;
+        border-radius: 5px;
+    }}
+    .stSlider>div>div {{
+        color: {TEXT_COLOR};
+    }}
+    .stError {{
+        color: {ERROR_COLOR};
+    }}
+    .stWarning {{
+        color: {WARNING_COLOR};
+    }}
+    .stInfo {{
+        color: {INFO_COLOR};
+    }}
+    h1, h2, h3, h4, h5, h6 {{
+        color: {TEXT_COLOR};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+for idx, suggestion in enumerate(st.session_state['brainstorm_suggestions']):
         suggestion_key = f"brainstorm_{idx}"
         short_text = suggestion[:200] + ("..." if len(suggestion) > 200 else "")
         
