@@ -628,19 +628,12 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
             You are a creative AI risk analysis expert for {domain}. Based on these high-priority risks:
             {suggestions}
 
-            Generate {num_brainstorm_risks} new risk suggestions to broaden the risk analysis. Focus on diverse, overlooked risks that complement the existing ones. For each suggestion, include:
-            - A concise risk description
-            - Risk Type (choose from: Technical, Financial, Ethical, Operational, Regulatory, Social, Legal)
-            - Risk Subtype (e.g., Data Bias, Algorithm Error for Technical; Fairness Issue, Privacy Violation for Ethical)
-            - Stakeholder
-            - Time Horizon (choose from: Short-term, Medium-term, Long-term)
-            - Driver (choose from: Technological, Human Error, Regulatory, Market Shift, Operational, Financial, Ethical, Lack of Accountability, Insufficient Redress Mechanisms, Data Quality Issues, Lack of Transparency)
-            - Why it matters
+            Generate {num_brainstorm_risks} new risk suggestions to broaden the risk analysis. Focus on diverse, overlooked risks that complement the existing ones. Each suggestion should be a concise, one-sentence description of a potential risk.
 
             Format each suggestion EXACTLY as:
-            - Risk: [description] (Type: [type], Subtype: [subtype], Stakeholder: [stakeholder], Time Horizon: [horizon], Driver: [driver], Why it matters: [reason])
+            - Risk: [description]
 
-            Ensure each suggestion is unique and relevant to the domain.
+            Ensure each suggestion is unique, relevant to the domain, and does not include additional metadata like risk type or stakeholder.
             """
 
             try:
@@ -651,7 +644,7 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=1000
+                    max_tokens=500
                 )
                 brainstorm_output = response.choices[0].message.content
                 st.write("**Raw LLM Response (for debugging):**")
@@ -660,8 +653,16 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 st.error(f"Failed to generate suggestions due to API error: {str(e)}")
                 st.stop()
 
-            brainstorm_suggestions = [s.strip() for s in brainstorm_output.split('\n') if s.strip().startswith('- Risk:')]
-            brainstorm_suggestions = [s[2:].strip() for s in brainstorm_suggestions]
+            # Flexible parsing to handle various bullet formats
+            brainstorm_suggestions = []
+            for line in brainstorm_output.split('\n'):
+                line = line.strip()
+                if line.startswith('- Risk:') or line.startswith('* Risk:') or re.match(r'^\d+\.\s*Risk:', line):
+                    # Remove bullet prefix (e.g., "- Risk:", "* Risk:", "1. Risk:")
+                    suggestion = re.sub(r'^- Risk:|\* Risk:|\d+\.\s*Risk:', '', line).strip()
+                    if suggestion.startswith('[') and suggestion.endswith(']'):
+                        suggestion = suggestion[1:-1]  # Remove square brackets
+                        brainstorm_suggestions.append(suggestion)
 
             if not brainstorm_suggestions:
                 st.error("No suggestions were generated. The LLM response did not match the expected format. Please check the raw response above for clues.")
