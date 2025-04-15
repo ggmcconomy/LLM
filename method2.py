@@ -505,47 +505,70 @@ if st.button("🔍 Generate Coverage Feedback"):
         if user_input.strip():
             try:
                 human_risks = [r.strip() for r in user_input.split('\n') if r.strip()]
+                if not human_risks:
+                    st.warning("No valid risks provided after processing.")
+                    st.stop()
+
                 human_embeddings = np.array(embedder.encode(human_risks))
                 distances, indices = index.search(human_embeddings, 5)
                 similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
 
-                # Analyze coverage
-                covered_types = {r['risk_type'] for r in similar_risks}
-                covered_subtypes = {r['risk_subtype'] for r in similar_risks}
-                covered_stakeholders = {r['stakeholder'] for r in similar_risks}
-                covered_horizons = {r['time_horizon'] for r in similar_risks}
-                covered_drivers = {r['driver'] for r in similar_risks}
-                covered_clusters = {r['cluster'] for r in similar_risks}
+                # Analyze coverage with sets
+                covered_types = {r.get('risk_type', '') for r in similar_risks}
+                covered_subtypes = {r.get('risk_subtype', '') for r in similar_risks}
+                covered_stakeholders = {r.get('stakeholder', '') for r in similar_risks}
+                covered_horizons = {r.get('time_horizon', '') for r in similar_risks}
+                covered_drivers = {r.get('driver', '') for r in similar_risks}
+                covered_clusters = {r.get('cluster', '') for r in similar_risks}
 
-                # Find missed and underrepresented areas
-                missed_types = sorted(list(set(df['risk_type']) - covered_types))
-                missed_subtypes = sorted(list(set(df['risk_subtype']) - covered_subtypes))
-                missed_stakeholders = sorted(list(set(df['stakeholder']) - covered_stakeholders))
-                missed_horizons = sorted(list(set(df['time_horizon']) - covered_horizons))
-                missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
-                missed_clusters = sorted(list(set(df['cluster']) - covered_clusters))
+                # Find missed areas
+                missed_types = sorted(list(set(df['risk_type'].fillna('')) - covered_types))
+                missed_subtypes = sorted(list(set(df['risk_subtype'].fillna('')) - covered_subtypes))
+                missed_stakeholders = sorted(list(set(df['stakeholder'].fillna('')) - covered_stakeholders))
+                missed_horizons = sorted(list(set(df['time_horizon'].fillna('')) - covered_horizons))
+                missed_drivers = sorted(list(set(df['driver'].fillna('')) - covered_drivers))
+                missed_clusters = sorted(list(set(df['cluster'].fillna('')) - covered_clusters))
 
-                # Identify underrepresented areas
-                human_risk_types = [r['risk_type'] for r in similar_risks]
-                human_subtypes = [r['risk_subtype'] for r in similar_risks]
-                human_stakeholders = [r['stakeholder'] for r in similar_risks]
-                human_horizons = [r['time_horizon'] for r in similar_risks]
-                human_drivers = [r['driver'] for r in similar_risks]
-                human_clusters = [r['cluster'] for r in similar_risks]
+                # Define human_* variables for underrepresented areas
+                human_risk_types = [r.get('risk_type', '') for r in similar_risks if 'risk_type' in r]
+                human_subtypes = [r.get('risk_subtype', '') for r in similar_risks if 'risk_subtype' in r]
+                human_stakeholders = [r.get('stakeholder', '') for r in similar_risks if 'stakeholder' in r]
+                human_horizons = [r.get('time_horizon', '') for r in similar_risks if 'time_horizon' in r]
+                human_drivers = [r.get('driver', '') for r in similar_risks if 'driver' in r]
+                human_clusters = [r.get('cluster', '') for r in similar_risks if 'cluster' in r]
 
-                underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
-                underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
-                underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
-                underrepresented_horizons = [h for h in df['time_horizon'].unique() if human_horizons.count(h) < df['time_horizon'].value_counts()[h] * 0.1]
-                underrepresented_drivers = [d for d in df['driver'].unique() if human_drivers.count(d) < df['driver'].value_counts()[d] * 0.1]
-                underrepresented_clusters = [c for c in df['cluster'].unique() if human_clusters.count(c) < df['cluster'].value_counts()[c] * 0.1]
+                # Identify underrepresented areas with safe checks
+                underrepresented_types = [
+                    t for t in df['risk_type'].unique()
+                    if t and human_risk_types.count(t) < (df['risk_type'].value_counts().get(t, 0) * 0.1)
+                ]
+                underrepresented_subtypes = [
+                    s for s in df['risk_subtype'].unique()
+                    if s and human_subtypes.count(s) < (df['risk_subtype'].value_counts().get(s, 0) * 0.1)
+                ]
+                underrepresented_stakeholders = [
+                    s for s in df['stakeholder'].unique()
+                    if s and human_stakeholders.count(s) < (df['stakeholder'].value_counts().get(s, 0) * 0.1)
+                ]
+                underrepresented_horizons = [
+                    h for h in df['time_horizon'].unique()
+                    if h and human_horizons.count(h) < (df['time_horizon'].value_counts().get(h, 0) * 0.1)
+                ]
+                underrepresented_drivers = [
+                    d for d in df['driver'].unique()
+                    if d and human_drivers.count(d) < (df['driver'].value_counts().get(d, 0) * 0.1)
+                ]
+                underrepresented_clusters = [
+                    c for c in df['cluster'].unique()
+                    if c and human_clusters.count(c) < (df['cluster'].value_counts().get(c, 0) * 0.1)
+                ]
 
                 # Prepare context examples
                 context_examples = []
                 for category, items in [
                     ("Missed Risk Types", missed_types),
                     ("Missed Risk Subtypes", missed_subtypes),
-                    ("Missed Stakeholders", Missed_stakeholders),
+                    ("Missed Stakeholders", missed_stakeholders),
                     ("Missed Time Horizons", missed_horizons),
                     ("Missed Drivers", missed_drivers),
                     ("Missed Clusters", missed_clusters),
@@ -572,7 +595,12 @@ if st.button("🔍 Generate Coverage Feedback"):
                                 example_rows = df[df['cluster'] == item].head(1)
                             if not example_rows.empty:
                                 example = example_rows.iloc[0]
-                                context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, Driver: {example['driver']}, Cluster: {cluster_labels[example['cluster']]})")
+                                context_examples.append(
+                                    f"{category}: {item} - Example: {example['risk_description']} "
+                                    f"(Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, "
+                                    f"Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, "
+                                    f"Driver: {example['driver']}, Cluster: {cluster_labels.get(example['cluster'], 'N/A')})"
+                                )
 
                 context_str = "\n".join(context_examples)
 
@@ -657,6 +685,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                     }
             except Exception as e:
                 st.error(f"Error processing risks: {str(e)}")
+                raise  # Re-raise to debug exact point of failure
         else:
             st.warning("Please enter or pull some risks first.")
 
@@ -709,7 +738,11 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 filt = filt[filt['risk_type'] == risk_type]
             top_suggestions = filt.sort_values(by='combined_score', ascending=False).head(num_brainstorm_risks)
 
-            suggestions = "\n".join(f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, Stakeholder: {r['stakeholder']}, Time Horizon: {r['time_horizon']}, Driver: {r['driver']})" for r in top_suggestions.to_dict('records'))
+            suggestions = "\n".join(
+                f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, "
+                f"Stakeholder: {r['stakeholder']}, Time Horizon: {r['time_horizon']}, Driver: {r['driver']})"
+                for r in top_suggestions.to_dict('records')
+            )
 
             domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
 
@@ -755,59 +788,7 @@ if 'brainstorm_suggestions' in st.session_state and st.session_state['brainstorm
     st.markdown("### Brainstormed Risk Suggestions:")
     st.write("Vote on creative risk ideas to add to Mural, or disagree with a reason.")
     
- BACKGROUND_COLOR = '#1a1a1a'  # Dark gray background
-TEXT_COLOR = '#f0f0f0'        # Light gray text
-BUTTON_COLOR = '#4CAF50'      # Green button color
-BUTTON_HOVER_COLOR = '#45a049'  # Darker green for hover
-ERROR_COLOR = '#ff4d4d'       # Red for errors
-WARNING_COLOR = '#ffcc00'     # Yellow for warnings
-INFO_COLOR = '#00ccff'        # Cyan for info
-
-# Apply custom CSS
-st.markdown(
-    f"""
-    <style>
-    .stApp {{
-        background-color: {BACKGROUND_COLOR};
-        color: {TEXT_COLOR};
-    }}
-    .stButton>button {{
-        background-color: {BUTTON_COLOR};
-        color: white;
-        border-radius: 5px;
-        padding: 0.5em 1em;
-        border: none;
-    }}
-    .stButton>button:hover {{
-        background-color: {BUTTON_HOVER_COLOR};
-    }}
-    .stTextInput>div>input, .stTextArea>div>textarea {{
-        background-color: #2a2a2a;
-        color: {TEXT_COLOR};
-        border: 1px solid #555;
-        border-radius: 5px;
-    }}
-    .stSlider>div>div {{
-        color: {TEXT_COLOR};
-    }}
-    .stError {{
-        color: {ERROR_COLOR};
-    }}
-    .stWarning {{
-        color: {WARNING_COLOR};
-    }}
-    .stInfo {{
-        color: {INFO_COLOR};
-    }}
-    h1, h2, h3, h4, h5, h6 {{
-        color: {TEXT_COLOR};
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-for idx, suggestion in enumerate(st.session_state['brainstorm_suggestions']):
+    for idx, suggestion in enumerate(st.session_state['brainstorm_suggestions']):
         suggestion_key = f"brainstorm_{idx}"
         short_text = suggestion[:200] + ("..." if len(suggestion) > 200 else "")
         
