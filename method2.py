@@ -14,6 +14,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import Counter
 import re
+import seaborn as sns
+import plotly.express as px
 
 # Temporarily disable torch.classes to avoid Streamlit watcher error
 sys.modules['torch.classes'] = None
@@ -114,6 +116,70 @@ def create_coverage_chart(title, categories, covered_counts, missed_counts, file
         return True
     except Exception as e:
         st.error(f"Error creating chart {filename}: {str(e)}")
+        return False
+
+def create_heatmap(df):
+    """Create a heatmap for risk severity across risk types and drivers."""
+    try:
+        pivot_table = df.pivot_table(values='severity', index='risk_type', columns='driver', aggfunc='mean')
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_table, annot=True, cmap='YlOrRd', fmt='.1f')
+        plt.title('Risk Severity Heatmap by Type and Driver')
+        plt.tight_layout()
+        plt.savefig('severity_heatmap.png')
+        plt.close()
+        return True
+    except Exception as e:
+        st.error(f"Error creating heatmap: {str(e)}")
+        return False
+
+def create_time_series_chart(df):
+    """Create a time series chart for average risk severity over time horizons."""
+    try:
+        time_horizons = ['Short-term', 'Medium-term', 'Long-term']
+        avg_severity = df.groupby('time_horizon')['severity'].mean().reindex(time_horizons)
+        plt.figure(figsize=(8, 6))
+        plt.plot(time_horizons, avg_severity, marker='o')
+        plt.xlabel('Time Horizon')
+        plt.ylabel('Average Severity')
+        plt.title('Average Risk Severity Over Time Horizons')
+        plt.tight_layout()
+        plt.savefig('time_series_chart.png')
+        plt.close()
+        return True
+    except Exception as e:
+        st.error(f"Error creating time series chart: {str(e)}")
+        return False
+
+def create_interactive_dashboard(df):
+    """Create an interactive dashboard for risk exploration using Plotly."""
+    try:
+        fig = px.scatter(df, x='risk_description', y='severity', color='risk_type',
+                         hover_data=['stakeholder', 'driver', 'time_horizon'],
+                         title='Interactive Risk Dashboard')
+        fig.update_layout(
+            updatemenus=[
+                dict(
+                    buttons=list([
+                        dict(label='All Stakeholders',
+                             method='update',
+                             args=[{'visible': [True] * len(df)}]),
+                        *[
+                            dict(label=s,
+                                 method='update',
+                                 args=[{'visible': df['stakeholder'] == s}])
+                            for s in df['stakeholder'].unique()
+                        ]
+                    ]),
+                    direction='down',
+                    showactive=True,
+                ),
+            ]
+        )
+        fig.write_html('interactive_dashboard.html')
+        return True
+    except Exception as e:
+        st.error(f"Error creating interactive dashboard: {str(e)}")
         return False
 
 def create_coverage_charts(covered_stakeholders, missed_stakeholders, covered_types, missed_types, covered_subtypes, missed_subtypes, covered_horizons, missed_horizons, covered_drivers, missed_drivers, top_n_subtypes=5):
@@ -435,7 +501,7 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                 # Analyze coverage
                 covered_types = {r['risk_type'] for r in similar_risks}
-                covered_subtypes = {r['subtype'] for r in similar_risks}
+                covered_subtypes = {r['risk_subtype'] for r in similar_risks}
                 covered_stakeholders = {r['stakeholder'] for r in similar_risks}
                 covered_horizons = {r['time_horizon'] for r in similar_risks}
                 covered_drivers = {r['driver'] for r in similar_risks}
@@ -443,28 +509,28 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                 # Find missed and underrepresented areas
                 missed_types = sorted(list(set(df['risk_type']) - covered_types))
-                missed_subtypes = sorted(list(set(df['subtype']) - covered_subtypes))
+                missed_subtypes = sorted(list(set(df['risk_subtype']) - covered_subtypes))
                 missed_stakeholders = sorted(list(set(df['stakeholder']) - covered_stakeholders))
                 missed_horizons = sorted(list(set(df['time_horizon']) - covered_horizons))
                 missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
                 missed_clusters = sorted(list(set(df['cluster']) - covered_clusters))
 
-                # Identify underrepresented areas (e.g., if fewer than 10% of expected coverage)
+                # Identify underrepresented areas
                 human_risk_types = [r['risk_type'] for r in similar_risks]
-                human_subtypes = [r['subtype'] for r in similar_risks]
+                human_subtypes = [r['risk_subtype'] for r in similar_risks]
                 human_stakeholders = [r['stakeholder'] for r in similar_risks]
                 human_horizons = [r['time_horizon'] for r in similar_risks]
                 human_drivers = [r['driver'] for r in similar_risks]
                 human_clusters = [r['cluster'] for r in similar_risks]
 
                 underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
-                underrepresented_subtypes = [s for s in df['subtype'].unique() if human_subtypes.count(s) < df['subtype'].value_counts()[s] * 0.1]
+                underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
                 underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
                 underrepresented_horizons = [h for h in df['time_horizon'].unique() if human_horizons.count(h) < df['time_horizon'].value_counts()[h] * 0.1]
                 underrepresented_drivers = [d for d in df['driver'].unique() if human_drivers.count(d) < df['driver'].value_counts()[d] * 0.1]
                 underrepresented_clusters = [c for c in df['cluster'].unique() if human_clusters.count(c) < df['cluster'].value_counts()[c] * 0.1]
 
-                # Prepare limited context from CSV for missed and underrepresented areas
+                # Prepare context examples
                 context_examples = []
                 for category, items in [
                     ("Missed Risk Types", missed_types),
@@ -481,11 +547,11 @@ if st.button("🔍 Generate Coverage Feedback"):
                     ("Underrepresented Clusters", underrepresented_clusters)
                 ]:
                     if items:
-                        for item in items[:3]:  # Limit to 3 examples per category
+                        for item in items[:3]:
                             if "Types" in category:
                                 example_rows = df[df['risk_type'] == item].head(1)
                             elif "Subtypes" in category:
-                                example_rows = df[df['subtype'] == item].head(1)
+                                example_rows = df[df['risk_subtype'] == item].head(1)
                             elif "Stakeholders" in category:
                                 example_rows = df[df['stakeholder'] == item].head(1)
                             elif "Horizons" in category:
@@ -496,7 +562,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                                 example_rows = df[df['cluster'] == item].head(1)
                             if not example_rows.empty:
                                 example = example_rows.iloc[0]
-                                context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['subtype']}, Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, Driver: {example['driver']}, Cluster: {cluster_labels[example['cluster']]})")
+                                context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, Driver: {example['driver']}, Cluster: {cluster_labels[example['cluster']]})")
 
                 context_str = "\n".join(context_examples)
 
@@ -512,17 +578,17 @@ if st.button("🔍 Generate Coverage Feedback"):
                 Provide feedback on the gaps in the user's harms analysis, focusing on risk types, subtypes, stakeholders, time horizons, drivers, and clusters that are overlooked or insufficiently developed:
 
                 1. **Missing Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
-                   - Identify categories completely missing from the user's risks and explain why they are critical for a comprehensive harms analysis.
-                   - Use the provided examples to illustrate what comprehensive coverage looks like.
+                   - Identify categories completely missing from the user's risks and explain why they are critical.
+                   - Use the provided examples to illustrate comprehensive coverage.
 
                 2. **Underrepresented Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
-                   - Highlight categories that are mentioned but lack depth or breadth (e.g., missing key aspects or examples).
-                   - Explain how this limits the analysis and use the provided examples to show what could be added.
+                   - Highlight categories that lack depth or breadth.
+                   - Explain how this limits the analysis and use examples to show what could be added.
 
                 3. **Suggestions for Improvement**:
-                   - Offer actionable advice on how to address these gaps by adding new risks or expanding existing ones in Mural, focusing on the types, subtypes, stakeholders, time horizons, drivers, and clusters rather than specific risk instances.
+                   - Offer actionable advice on addressing these gaps by adding or expanding risks in Mural.
 
-                Ensure the feedback is constructive and directly tied to the examples provided, emphasizing the importance of addressing all relevant risk categories for a thorough harms analysis.
+                Ensure feedback is constructive and tied to the examples, emphasizing comprehensive harms analysis.
                 """
 
                 try:
@@ -561,6 +627,11 @@ if st.button("🔍 Generate Coverage Feedback"):
                         top_n_subtypes=top_n_subtypes
                     )
 
+                    # Generate new visuals
+                    create_heatmap(df)
+                    create_time_series_chart(df)
+                    create_interactive_dashboard(df)
+
                     st.session_state['feedback'] = feedback
                     st.session_state['coverage_data'] = {
                         'covered_stakeholders': covered_stakeholders_list,
@@ -586,13 +657,14 @@ if 'coverage_data' in st.session_state:
     col1, col2, col3 = st.columns(3)
     try:
         with col1:
-            st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_container_width=True)
-            st.image("time_horizon_coverage.png", caption="Time Horizon Gaps", use_container_width=True)
+            st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_column_width=True)
+            st.image("severity_heatmap.png", caption="Risk Severity Heatmap: Darker colors indicate higher severity.", use_column_width=True)
         with col2:
-            st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_container_width=True)
-            st.image("driver_coverage.png", caption="Driver Gaps", use_container_width=True)
+            st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_column_width=True)
+            st.image("time_series_chart.png", caption="Risk Severity Over Time", use_column_width=True)
         with col3:
-            st.image("risk_subtype_coverage.png", caption=f"Top {top_n_subtypes} Overlooked Subtype Gaps", use_container_width=True)
+            st.image("risk_subtype_coverage.png", caption=f"Top {top_n_subtypes} Overlooked Subtype Gaps", use_column_width=True)
+            st.markdown("[Interactive Dashboard](interactive_dashboard.html)")
     except FileNotFoundError:
         st.error("Coverage charts failed to generate. Please try generating feedback again.")
 
@@ -627,9 +699,8 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 filt = filt[filt['risk_type'] == risk_type]
             top_suggestions = filt.sort_values(by='combined_score', ascending=False).head(num_brainstorm_risks)
 
-            suggestions = "\n".join(f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['subtype']}, Stakeholder: {r['stakeholder']}, Time Horizon: {r['time_horizon']}, Driver: {r['driver']})" for r in top_suggestions.to_dict('records'))
+            suggestions = "\n".join(f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, Stakeholder: {r['stakeholder']}, Time Horizon: {r['time_horizon']}, Driver: {r['driver']})" for r in top_suggestions.to_dict('records'))
 
-            # Ensure domain is defined
             domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
 
             prompt = f"""
@@ -658,12 +729,11 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
             )
             brainstorm_output = response.choices[0].message.content
 
-            # Extract suggestions
             brainstorm_suggestions = [s.strip() for s in brainstorm_output.split('\n') if s.strip().startswith('- Risk:')]
             brainstorm_suggestions = [s[2:].strip() for s in brainstorm_suggestions]
 
             if not brainstorm_suggestions:
-                st.warning("No suggestions were generated. The API response might not match the expected format.")
+                st.warning("No suggestions were generated.")
             else:
                 st.session_state['brainstorm_suggestions'] = brainstorm_suggestions[:num_brainstorm_risks]
 
@@ -715,7 +785,6 @@ if st.button("🔧 Generate Mitigation Strategies"):
                 
                 mitigation_strategies = []
                 for risk in human_risks:
-                    # Find similar risks to provide context using RAG
                     risk_embedding = embedder.encode([risk])
                     distances, indices = index.search(risk_embedding, 1)
                     similar_risk = df.iloc[indices[0][0]].to_dict()
@@ -727,12 +796,12 @@ if st.button("🔧 Generate Mitigation Strategies"):
                     Consider the following similar risk from the database:
                     - Description: {similar_risk['risk_description']}
                     - Type: {similar_risk['risk_type']}
-                    - Subtype: {similar_risk['subtype']}
+                    - Subtype: {similar_risk['risk_subtype']}
                     - Stakeholder: {similar_risk['stakeholder']}
                     - Time Horizon: {similar_risk['time_horizon']}
                     - Driver: {similar_risk['driver']}
 
-                    Provide 1-2 human-centric mitigation strategies that prioritize user needs, ethical considerations, and practical implementation, taking into account the time horizon and driver of the risk. Include a brief example for each strategy to illustrate how it can be applied.
+                    Provide 1-2 human-centric mitigation strategies that prioritize user needs, ethical considerations, and practical implementation. Include a brief example for each strategy.
 
                     Format the response as:
                     - Strategy 1: [description] (Example: [example])
