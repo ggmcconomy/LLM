@@ -15,13 +15,12 @@ import matplotlib.pyplot as plt
 from collections import Counter
 import re
 import seaborn as sns
-import plotly.express as px
-
-# Temporarily disable torch.classes to avoid Streamlit watcher error
-sys.modules['torch.classes'] = None
 from sentence_transformers import SentenceTransformer
 import faiss
 from openai import OpenAI
+
+# Temporarily disable torch.classes to avoid Streamlit watcher error
+sys.modules['torch.classes'] = None
 
 # --- Configuration ---
 st.set_page_config(page_title="AI Risk Feedback & Brainstorming", layout="wide")
@@ -98,164 +97,50 @@ def get_cluster_labels(df):
             cluster_labels[cluster_id] = f"Cluster {cluster_id}"
     return cluster_labels
 
-def create_coverage_chart(title, categories, covered_counts, missed_counts, filename):
-    """Create a single bar chart for coverage."""
+def create_heatmap(df, value_col, index_col, columns_col, title, filename):
+    """Create a heatmap for risk severity."""
     try:
-        plt.figure(figsize=(6, 4))
-        x = np.arange(len(categories))
-        plt.bar(x - 0.2, covered_counts, 0.4, label='Covered', color='#2ecc71')
-        plt.bar(x + 0.2, missed_counts, 0.4, label='Missed', color='#e74c3c')
-        plt.xlabel(title.split(' ')[-1])
-        plt.ylabel('Number of Risks')
+        pivot_table = df.pivot_table(values=value_col, index=index_col, columns=columns_col, aggfunc='mean', fill_value=0)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_table, annot=True, cmap='YlOrRd', fmt='.1f')
         plt.title(title)
-        plt.xticks(x, categories, rotation=45, ha='right')
-        plt.legend()
         plt.tight_layout()
         plt.savefig(filename)
         plt.close()
         return True
     except Exception as e:
-        st.error(f"Error creating chart {filename}: {str(e)}")
+        st.error(f"Error creating heatmap {filename}: {str(e)}")
         return False
 
-def create_heatmap(df):
-    """Create a heatmap for risk severity across risk types and drivers."""
+def create_blindspots_heatmap(missed_df, index_col, columns_col, title, filename):
+    """Create a heatmap for blindspots (missed areas)."""
     try:
-        pivot_table = df.pivot_table(values='severity', index='risk_type', columns='driver', aggfunc='mean')
+        pivot_table = missed_df.pivot_table(values='missed_count', index=index_col, columns=columns_col, aggfunc='sum', fill_value=0)
         plt.figure(figsize=(10, 8))
-        sns.heatmap(pivot_table, annot=True, cmap='YlOrRd', fmt='.1f')
-        plt.title('Risk Severity Heatmap by Type and Driver')
+        sns.heatmap(pivot_table, annot=True, cmap='Blues', fmt='.0f')
+        plt.title(title)
         plt.tight_layout()
-        plt.savefig('severity_heatmap.png')
+        plt.savefig(filename)
         plt.close()
         return True
     except Exception as e:
-        st.error(f"Error creating heatmap: {str(e)}")
+        st.error(f"Error creating blindspots heatmap {filename}: {str(e)}")
         return False
 
-def create_time_series_chart(df):
-    """Create a time series chart for average risk severity over time horizons."""
+def create_fusion_heatmap(fusion_df, index_col, columns_col, title, filename):
+    """Create a fusion heatmap combining severity and blindspots."""
     try:
-        time_horizons = ['Short-term', 'Medium-term', 'Long-term']
-        avg_severity = df.groupby('time_horizon')['severity'].mean().reindex(time_horizons)
-        plt.figure(figsize=(8, 6))
-        plt.plot(time_horizons, avg_severity, marker='o')
-        plt.xlabel('Time Horizon')
-        plt.ylabel('Average Severity')
-        plt.title('Average Risk Severity Over Time Horizons')
+        pivot_table = fusion_df.pivot_table(values='combined_score', index=index_col, columns=columns_col, aggfunc='mean', fill_value=0)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_table, annot=True, cmap='Reds', fmt='.1f')
+        plt.title(title)
         plt.tight_layout()
-        plt.savefig('time_series_chart.png')
+        plt.savefig(filename)
         plt.close()
         return True
     except Exception as e:
-        st.error(f"Error creating time series chart: {str(e)}")
+        st.error(f"Error creating fusion heatmap {filename}: {str(e)}")
         return False
-
-def create_interactive_dashboard(df):
-    """Create an interactive dashboard for risk exploration using Plotly."""
-    try:
-        fig = px.scatter(df, x='risk_description', y='severity', color='risk_type',
-                         hover_data=['stakeholder', 'driver', 'time_horizon'],
-                         title='Interactive Risk Dashboard')
-        fig.update_layout(
-            updatemenus=[
-                dict(
-                    buttons=list([
-                        dict(label='All Stakeholders',
-                             method='update',
-                             args=[{'visible': [True] * len(df)}]),
-                        *[
-                            dict(label=s,
-                                 method='update',
-                                 args=[{'visible': df['stakeholder'] == s}])
-                            for s in df['stakeholder'].unique()
-                        ]
-                    ]),
-                    direction='down',
-                    showactive=True,
-                ),
-            ]
-        )
-        fig.write_html('interactive_dashboard.html')
-        return True
-    except Exception as e:
-        st.error(f"Error creating interactive dashboard: {str(e)}")
-        return False
-
-def create_coverage_charts(covered_stakeholders, missed_stakeholders, covered_types, missed_types, covered_subtypes, missed_subtypes, covered_horizons, missed_horizons, covered_drivers, missed_drivers, top_n_subtypes=5):
-    """Create bar charts for coverage visualization including time horizons and drivers."""
-    try:
-        plt.style.use('ggplot')
-    except Exception as e:
-        st.warning(f"ggplot style failed: {str(e)}. Using default style.")
-        plt.style.use('default')
-
-    # Stakeholder Chart
-    stakeholders = sorted(set(covered_stakeholders + missed_stakeholders))
-    covered_counts = [covered_stakeholders.count(s) for s in stakeholders]
-    missed_counts = [missed_stakeholders.count(s) for s in stakeholders]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    stakeholders = [stakeholders[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if stakeholders:
-        create_coverage_chart("Stakeholder Coverage Gaps", stakeholders, covered_counts, missed_counts, 'stakeholder_coverage.png')
-    else:
-        st.warning("No stakeholder data to display.")
-
-    # Risk Type Chart
-    risk_types = sorted(set(covered_types + missed_types))
-    covered_counts = [covered_types.count(t) for t in risk_types]
-    missed_counts = [missed_types.count(t) for t in risk_types]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    risk_types = [risk_types[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if risk_types:
-        create_coverage_chart("Risk Type Coverage Gaps", risk_types, covered_counts, missed_counts, 'risk_type_coverage.png')
-    else:
-        st.warning("No risk type data to display.")
-
-    # Risk Subtype Chart (Top N Missed Only)
-    subtype_counts = Counter(missed_subtypes)
-    top_missed_subtypes = [subtype for subtype, _ in subtype_counts.most_common(top_n_subtypes)]
-    covered_counts = [covered_subtypes.count(s) for s in top_missed_subtypes]
-    missed_counts = [missed_subtypes.count(s) for s in top_missed_subtypes]
-    
-    if top_missed_subtypes:
-        create_coverage_chart(f"Top {top_n_subtypes} Overlooked Risk Subtype Gaps", top_missed_subtypes, covered_counts, missed_counts, 'risk_subtype_coverage.png')
-    else:
-        st.warning("No risk subtype data to display.")
-
-    # Time Horizon Chart
-    horizons = sorted(set(covered_horizons + missed_horizons))
-    covered_counts = [covered_horizons.count(h) for h in horizons]
-    missed_counts = [missed_horizons.count(h) for h in horizons]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    horizons = [horizons[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if horizons:
-        create_coverage_chart("Time Horizon Coverage Gaps", horizons, covered_counts, missed_counts, 'time_horizon_coverage.png')
-    else:
-        st.warning("No time horizon data to display.")
-
-    # Driver Chart
-    drivers = sorted(set(covered_drivers + missed_drivers))
-    covered_counts = [covered_drivers.count(d) for d in drivers]
-    missed_counts = [missed_drivers.count(d) for d in drivers]
-    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
-    drivers = [drivers[i] for i in non_zero_indices]
-    covered_counts = [covered_counts[i] for i in non_zero_indices]
-    missed_counts = [missed_counts[i] for i in non_zero_indices]
-    
-    if drivers:
-        create_coverage_chart("Driver Coverage Gaps", drivers, covered_counts, missed_counts, 'driver_coverage.png')
-    else:
-        st.warning("No driver data to display.")
 
 # --- OAuth Functions ---
 def get_authorization_url():
@@ -389,8 +274,6 @@ index_file = 'faiss_index.faiss'
 
 try:
     df = pd.read_csv(csv_file)
-    if 'overlooked_label' in df.columns:
-        df = df.drop(columns=['overlooked_label'])
     numeric_columns = ['severity', 'probability', 'combined_score']
     for col in numeric_columns:
         if col in df.columns:
@@ -498,225 +381,67 @@ user_input = st.text_area("", value=default_text, height=200, placeholder="Enter
 
 # --- Section 2: Generate Coverage Feedback ---
 st.subheader("2️⃣ Coverage Feedback")
-st.write("Analyze gaps in your risk coverage with examples.")
-top_n_subtypes = st.slider("Top N Overlooked Subtypes to Display", 3, 10, 5)
+st.write("Analyze gaps in your risk coverage with heatmaps.")
 if st.button("🔍 Generate Coverage Feedback"):
     with st.spinner("Analyzing coverage..."):
         if user_input.strip():
             try:
                 human_risks = [r.strip() for r in user_input.split('\n') if r.strip()]
-                if not human_risks:
-                    st.warning("No valid risks provided after processing.")
-                    st.stop()
-
                 human_embeddings = np.array(embedder.encode(human_risks))
                 distances, indices = index.search(human_embeddings, 5)
                 similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
 
-                # Analyze coverage with sets
-                covered_types = {r.get('risk_type', '') for r in similar_risks}
-                covered_subtypes = {r.get('risk_subtype', '') for r in similar_risks}
-                covered_stakeholders = {r.get('stakeholder', '') for r in similar_risks}
-                covered_horizons = {r.get('time_horizon', '') for r in similar_risks}
-                covered_drivers = {r.get('driver', '') for r in similar_risks}
-                covered_clusters = {r.get('cluster', '') for r in similar_risks}
+                # Analyze coverage
+                covered_types = {r['risk_type'] for r in similar_risks}
+                covered_drivers = {r['driver'] for r in similar_risks}
 
                 # Find missed areas
-                missed_types = sorted(list(set(df['risk_type'].fillna('')) - covered_types))
-                missed_subtypes = sorted(list(set(df['risk_subtype'].fillna('')) - covered_subtypes))
-                missed_stakeholders = sorted(list(set(df['stakeholder'].fillna('')) - covered_stakeholders))
-                missed_horizons = sorted(list(set(df['time_horizon'].fillna('')) - covered_horizons))
-                missed_drivers = sorted(list(set(df['driver'].fillna('')) - covered_drivers))
-                missed_clusters = sorted(list(set(df['cluster'].fillna('')) - covered_clusters))
+                missed_types = sorted(list(set(df['risk_type']) - covered_types))
+                missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
 
-                # Define human_* variables for underrepresented areas
-                human_risk_types = [r.get('risk_type', '') for r in similar_risks if 'risk_type' in r]
-                human_subtypes = [r.get('risk_subtype', '') for r in similar_risks if 'risk_subtype' in r]
-                human_stakeholders = [r.get('stakeholder', '') for r in similar_risks if 'stakeholder' in r]
-                human_horizons = [r.get('time_horizon', '') for r in similar_risks if 'time_horizon' in r]
-                human_drivers = [r.get('driver', '') for r in similar_risks if 'driver' in r]
-                human_clusters = [r.get('cluster', '') for r in similar_risks if 'cluster' in r]
+                # Prepare data for heatmaps
+                # Severity Heatmap Data
+                severity_data = df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
 
-                # Identify underrepresented areas with safe checks
-                underrepresented_types = [
-                    t for t in df['risk_type'].unique()
-                    if t and human_risk_types.count(t) < (df['risk_type'].value_counts().get(t, 0) * 0.1)
-                ]
-                underrepresented_subtypes = [
-                    s for s in df['risk_subtype'].unique()
-                    if s and human_subtypes.count(s) < (df['risk_subtype'].value_counts().get(s, 0) * 0.1)
-                ]
-                underrepresented_stakeholders = [
-                    s for s in df['stakeholder'].unique()
-                    if s and human_stakeholders.count(s) < (df['stakeholder'].value_counts().get(s, 0) * 0.1)
-                ]
-                underrepresented_horizons = [
-                    h for h in df['time_horizon'].unique()
-                    if h and human_horizons.count(h) < (df['time_horizon'].value_counts().get(h, 0) * 0.1)
-                ]
-                underrepresented_drivers = [
-                    d for d in df['driver'].unique()
-                    if d and human_drivers.count(d) < (df['driver'].value_counts().get(d, 0) * 0.1)
-                ]
-                underrepresented_clusters = [
-                    c for c in df['cluster'].unique()
-                    if c and human_clusters.count(c) < (df['cluster'].value_counts().get(c, 0) * 0.1)
-                ]
+                # Blindspots Heatmap Data
+                missed_df = df[df['risk_type'].isin(missed_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
 
-                # Prepare context examples
-                context_examples = []
-                for category, items in [
-                    ("Missed Risk Types", missed_types),
-                    ("Missed Risk Subtypes", missed_subtypes),
-                    ("Missed Stakeholders", missed_stakeholders),
-                    ("Missed Time Horizons", missed_horizons),
-                    ("Missed Drivers", missed_drivers),
-                    ("Missed Clusters", missed_clusters),
-                    ("Underrepresented Risk Types", underrepresented_types),
-                    ("Underrepresented Risk Subtypes", underrepresented_subtypes),
-                    ("Underrepresented Stakeholders", underrepresented_stakeholders),
-                    ("Underrepresented Time Horizons", underrepresented_horizons),
-                    ("Underrepresented Drivers", underrepresented_drivers),
-                    ("Underrepresented Clusters", underrepresented_clusters)
-                ]:
-                    if items:
-                        for item in items[:3]:
-                            if "Types" in category:
-                                example_rows = df[df['risk_type'] == item].head(1)
-                            elif "Subtypes" in category:
-                                example_rows = df[df['risk_subtype'] == item].head(1)
-                            elif "Stakeholders" in category:
-                                example_rows = df[df['stakeholder'] == item].head(1)
-                            elif "Horizons" in category:
-                                example_rows = df[df['time_horizon'] == item].head(1)
-                            elif "Drivers" in category:
-                                example_rows = df[df['driver'] == item].head(1)
-                            elif "Clusters" in category:
-                                example_rows = df[df['cluster'] == item].head(1)
-                            if not example_rows.empty:
-                                example = example_rows.iloc[0]
-                                context_examples.append(
-                                    f"{category}: {item} - Example: {example['risk_description']} "
-                                    f"(Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, "
-                                    f"Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, "
-                                    f"Driver: {example['driver']}, Cluster: {cluster_labels.get(example['cluster'], 'N/A')})"
-                                )
+                # Fusion Heatmap Data
+                fusion_df = df.copy()
+                fusion_df['is_missed'] = fusion_df['risk_type'].isin(missed_types)
+                fusion_df['combined_score'] = fusion_df['severity'] * fusion_df['is_missed'].astype(int)
+                fusion_df = fusion_df.groupby(['risk_type', 'driver'])['combined_score'].mean().reset_index()
 
-                context_str = "\n".join(context_examples)
+                # Generate heatmaps
+                create_heatmap(severity_data, 'severity', 'risk_type', 'driver', 'Risk Severity Heatmap', 'severity_heatmap.png')
+                create_blindspots_heatmap(missed_df, 'risk_type', 'driver', 'Blindspots Heatmap', 'blindspots_heatmap.png')
+                create_fusion_heatmap(fusion_df, 'risk_type', 'driver', 'Fusion Heatmap: High-Risk Blindspots', 'fusion_heatmap.png')
 
-                # Prepare coverage feedback prompt
-                domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
-                prompt = f"""
-                You are an AI risk analysis expert for {domain}, focusing solely on harms identification. The user has identified these finalized risks from Mural:
-                {chr(10).join(f'- {r}' for r in human_risks)}
-
-                Using the following examples from the risk database:
-                {context_str}
-
-                Provide feedback on the gaps in the user's harms analysis, focusing on risk types, subtypes, stakeholders, time horizons, drivers, and clusters that are overlooked or insufficiently developed:
-
-                1. **Missing Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
-                   - Identify categories completely missing from the user's risks and explain why they are critical.
-                   - Use the provided examples to illustrate comprehensive coverage.
-
-                2. **Underrepresented Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
-                   - Highlight categories that lack depth or breadth.
-                   - Explain how this limits the analysis and use examples to show what could be added.
-
-                3. **Suggestions for Improvement**:
-                   - Offer actionable advice on addressing these gaps by adding or expanding risks in Mural.
-
-                Ensure feedback is constructive and tied to the examples, emphasizing comprehensive harms analysis.
-                """
-
-                try:
-                    response = openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": "You are a helpful AI risk advisor specializing in harms identification."},
-                            {"role": "user", "content": prompt}
-                        ]
-                    )
-                    feedback = response.choices[0].message.content
-                except Exception as e:
-                    st.error(f"OpenAI API error: {str(e)}")
-                    feedback = None
-
-                if feedback:
-                    # Prepare data for coverage charts
-                    covered_stakeholders_list = list(covered_stakeholders)
-                    covered_types_list = list(covered_types)
-                    covered_subtypes_list = list(covered_subtypes)
-                    covered_horizons_list = list(covered_horizons)
-                    covered_drivers_list = list(covered_drivers)
-                    missed_stakeholders_list = list(missed_stakeholders)
-                    missed_types_list = list(missed_types)
-                    missed_subtypes_list = list(missed_subtypes)
-                    missed_horizons_list = list(missed_horizons)
-                    missed_drivers_list = list(missed_drivers)
-
-                    # Generate coverage charts
-                    create_coverage_charts(
-                        covered_stakeholders_list, missed_stakeholders_list,
-                        covered_types_list, missed_types_list,
-                        covered_subtypes_list, missed_subtypes_list,
-                        covered_horizons_list, missed_horizons_list,
-                        covered_drivers_list, missed_drivers_list,
-                        top_n_subtypes=top_n_subtypes
-                    )
-
-                    # Generate new visuals
-                    create_heatmap(df)
-                    create_time_series_chart(df)
-                    create_interactive_dashboard(df)
-
-                    st.session_state['feedback'] = feedback
-                    st.session_state['coverage_data'] = {
-                        'covered_stakeholders': covered_stakeholders_list,
-                        'missed_stakeholders': missed_stakeholders_list,
-                        'covered_types': covered_types_list,
-                        'missed_types': missed_types_list,
-                        'covered_subtypes': covered_subtypes_list,
-                        'missed_subtypes': missed_subtypes_list,
-                        'covered_horizons': covered_horizons_list,
-                        'missed_horizons': missed_horizons_list,
-                        'covered_drivers': covered_drivers_list,
-                        'missed_drivers': missed_drivers_list
-                    }
+                # Store feedback
+                st.session_state['feedback'] = "Coverage feedback generated successfully."
+                st.session_state['heatmaps_generated'] = True
             except Exception as e:
                 st.error(f"Error processing risks: {str(e)}")
-                raise  # Re-raise to debug exact point of failure
         else:
             st.warning("Please enter or pull some risks first.")
 
 # --- Section 3: Coverage Visualization ---
-if 'coverage_data' in st.session_state:
+if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_generated']:
     st.subheader("3️⃣ Coverage Visualization")
-    st.write("View gaps in risk coverage to identify weaknesses.")
+    st.write("View risk severity, blindspots, and critical high-risk blindspots.")
     col1, col2, col3 = st.columns(3)
     try:
         with col1:
-            st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_column_width=True)
-            st.image("severity_heatmap.png", caption="Risk Severity Heatmap: Darker colors indicate higher severity.", use_column_width=True)
+            st.image("severity_heatmap.png", caption="Risk Severity Heatmap", use_container_width=True)
         with col2:
-            st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_column_width=True)
-            st.image("time_series_chart.png", caption="Risk Severity Over Time", use_column_width=True)
+            st.image("blindspots_heatmap.png", caption="Blindspots Heatmap", use_container_width=True)
         with col3:
-            st.image("risk_subtype_coverage.png", caption=f"Top {top_n_subtypes} Overlooked Subtype Gaps", use_column_width=True)
-            st.markdown("[Interactive Dashboard](interactive_dashboard.html)")
+            st.image("fusion_heatmap.png", caption="Fusion Heatmap: High-Risk Blindspots", use_container_width=True)
     except FileNotFoundError:
-        st.error("Coverage charts failed to generate. Please try generating feedback again.")
+        st.error("Heatmaps failed to generate. Please try generating feedback again.")
 
-# --- Section 4: Coverage Feedback (Textual) ---
-if 'feedback' in st.session_state:
-    st.subheader("4️⃣ Coverage Feedback (Textual)")
-    st.write("Review gaps in your risk analysis with examples to inspire additions to Mural.")
-    st.markdown("### Coverage Feedback:")
-    st.markdown(st.session_state['feedback'])
-    st.info("Add inspired risks to Mural based on these examples, then re-pull Mural data for further analysis.")
-
-# --- Section 5: Brainstorm Risks ---
-st.subheader("5️⃣ Brainstorm Risks")
+# --- Section 4: Brainstorm Risks ---
+st.subheader("4️⃣ Brainstorm Risks")
 st.write("Generate creative risk suggestions to broaden your analysis.")
 num_brainstorm_risks = st.slider("Number of Suggestions", 1, 5, 5, key="num_brainstorm_risks")
 stakeholder_options = sorted(df['stakeholder'].dropna().unique())
@@ -816,8 +541,8 @@ if 'brainstorm_suggestions' in st.session_state and st.session_state['brainstorm
 else:
     st.info("No suggestions available. Click 'Generate Risk Suggestions' to create new ideas.")
 
-# --- Section 6: Mitigation Strategies ---
-st.subheader("6️⃣ Mitigation Strategies")
+# --- Section 5: Mitigation Strategies ---
+st.subheader("5️⃣ Mitigation Strategies")
 st.write("Review human-centric mitigation strategies for each finalized Mural risk.")
 if st.button("🔧 Generate Mitigation Strategies"):
     with st.spinner("Generating mitigation strategies..."):
