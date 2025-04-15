@@ -106,7 +106,7 @@ def create_coverage_chart(title, categories, covered_counts, missed_counts, file
         plt.savefig(filename)
         plt.close()
     except Exception as e:
-        st.error(f"Error creating chart: {e}")
+        st.error(f"Error creating chart {filename}: {e}")
 
 def create_coverage_charts(covered_stakeholders, missed_stakeholders,
                            covered_types, missed_types,
@@ -119,15 +119,21 @@ def create_coverage_charts(covered_stakeholders, missed_stakeholders,
         pass
 
     # 1) Stakeholder chart
-    all_st = sorted(set(covered_stakeholders + missed_stakeholders))
-    cov_ct = [covered_stakeholders.count(s) for s in all_st]
-    mis_ct = [missed_stakeholders.count(s) for s in all_st]
-    nz_index = [i for i,(c,m) in enumerate(zip(cov_ct, mis_ct)) if c>0 or m>0]
-    all_st = [all_st[i] for i in nz_index]
-    cov_ct = [cov_ct[i] for i in nz_index]
-    mis_ct = [mis_ct[i] for i in nz_index]
-    if all_st:
-        create_coverage_chart("Stakeholder Coverage Gaps", all_st, cov_ct, mis_ct, 'stakeholder_coverage.png')
+    if "stakeholder" in df.columns:
+        all_st = sorted(set(covered_stakeholders + missed_stakeholders))
+        cov_ct = [covered_stakeholders.count(s) for s in all_st]
+        mis_ct = [missed_stakeholders.count(s) for s in all_st]
+        nz_index = [i for i,(c,m) in enumerate(zip(cov_ct, mis_ct)) if c>0 or m>0]
+        all_st = [all_st[i] for i in nz_index]
+        cov_ct = [cov_ct[i] for i in nz_index]
+        mis_ct = [mis_ct[i] for i in nz_index]
+        st.write(f"Stakeholder data: {all_st}")  # Debug
+        if all_st:
+            create_coverage_chart("Stakeholder Coverage Gaps", all_st, cov_ct, mis_ct, 'stakeholder_coverage.png')
+        else:
+            st.write("No stakeholder data to plot.")
+    else:
+        st.write("No 'stakeholder' column in CSV.")
 
     # 2) Risk Type chart
     all_ty = sorted(set(covered_types + missed_types))
@@ -137,16 +143,22 @@ def create_coverage_charts(covered_stakeholders, missed_stakeholders,
     all_ty = [all_ty[i] for i in nz_index]
     cov_ty = [cov_ty[i] for i in nz_index]
     mis_ty = [mis_ty[i] for i in nz_index]
+    st.write(f"Risk type data: {all_ty}")  # Debug
     if all_ty:
         create_coverage_chart("Risk Type Coverage Gaps", all_ty, cov_ty, mis_ty, 'risk_type_coverage.png')
+    else:
+        st.write("No risk type data to plot.")
 
     # 3) Risk Subtype chart
     st_counter = Counter(missed_subtypes)
     top_missed = [k for k,_ in st_counter.most_common(top_n_subtypes)]
     cov_sub = [covered_subtypes.count(s) for s in top_missed]
     mis_sub = [missed_subtypes.count(s) for s in top_missed]
+    st.write(f"Risk subtype data: {top_missed}")  # Debug
     if top_missed:
         create_coverage_chart(f"Top {top_n_subtypes} Overlooked Subtypes", top_missed, cov_sub, mis_sub, 'risk_subtype_coverage.png')
+    else:
+        st.write("No risk subtype data to plot.")
 
 ###############################################################
 # Mural OAuth
@@ -340,7 +352,7 @@ with st.sidebar:
                 for w_ in widgets:
                     widget_type = w_.get("type", "").lower()
                     st.write(f"Widget: type={widget_type}, id={w_.get('id')}")
-                    if widget_type == "sticky note":  # Match API's exact casing
+                    if widget_type == "sticky note":
                         raw = w_.get("htmlText") or w_.get("text") or w_.get("content", "")
                         cleaned = clean_html_text(raw)
                         st.write(f"Sticky: raw={raw}, cleaned={cleaned}")
@@ -421,18 +433,18 @@ if st.button("Analyze Coverage"):
             with col1:
                 try:
                     st.image("stakeholder_coverage.png", caption="Stakeholder Gaps", use_column_width=True)
-                except FileNotFoundError:
-                    pass
+                except (FileNotFoundError, st.runtime.media_file_storage.MediaFileStorageError):
+                    st.write("Stakeholder chart not available.")
             with col2:
                 try:
                     st.image("risk_type_coverage.png", caption="Risk Type Gaps", use_column_width=True)
-                except FileNotFoundError:
-                    pass
+                except (FileNotFoundError, st.runtime.media_file_storage.MediaFileStorageError):
+                    st.write("Risk type chart not available.")
             with col3:
                 try:
                     st.image("risk_subtype_coverage.png", caption="Subtype Gaps", use_column_width=True)
-                except FileNotFoundError:
-                    pass
+                except (FileNotFoundError, st.runtime.media_file_storage.MediaFileStorageError):
+                    st.write("Risk subtype chart not available.")
 
             # Display neighbor distances
             st.write("### Example neighbor distances")
