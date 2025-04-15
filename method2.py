@@ -1,4 +1,3 @@
-
 import os
 import json
 import uuid
@@ -15,12 +14,12 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from collections import Counter
 import re
-
-# Temporarily disable torch.classes to avoid Streamlit watcher error
-sys.modules['torch.classes'] = None
 from sentence_transformers import SentenceTransformer
 import faiss
 from openai import OpenAI
+
+# Temporarily disable torch.classes to avoid Streamlit watcher error
+sys.modules['torch.classes'] = None
 
 # --- Configuration ---
 st.set_page_config(page_title="AI Risk Feedback & Brainstorming", layout="wide")
@@ -296,9 +295,12 @@ index_file = 'faiss_index.faiss'
 
 try:
     df = pd.read_csv(csv_file)
-    if 'overlooked_label' in df.columns:
-        df = df.drop(columns=['overlooked_label'])
-    numeric_columns = ['severity', 'probability', 'combined_score']
+    # Handle new columns from revised Method 1
+    if 'mitigation_suggestion' not in df.columns:
+        df['mitigation_suggestion'] = ""
+    if 'confidence' not in df.columns:
+        df['confidence'] = 0.0
+    numeric_columns = ['severity', 'probability', 'combined_score', 'confidence']
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -306,19 +308,19 @@ try:
                 non_numeric_rows = df[df[col].isna()].index.tolist()
                 st.warning(f"Non-numeric values found in {col} at rows: {non_numeric_rows}. Converted to NaN.")
 except FileNotFoundError:
-    st.error(f"Clustered CSV {csv_file} not found. Please run generate_clustered_files.py first.")
+    st.error(f"Clustered CSV {csv_file} not found. Please run Method 1 first.")
     st.stop()
 
 try:
     csv_embeddings = np.load(embeddings_file)
 except FileNotFoundError:
-    st.error(f"Embeddings file {embeddings_file} not found. Please run generate_clustered_files.py first.")
+    st.error(f"Embeddings file {embeddings_file} not found. Please run Method 1 first.")
     st.stop()
 
 try:
     index = faiss.read_index(index_file)
 except FileNotFoundError:
-    st.error(f"Index file {index_file} not found. Please run generate_clustered_files.py first.")
+    st.error(f"Index file {index_file} not found. Please run Method 1 first.")
     st.stop()
 
 # Initialize embedder
@@ -330,7 +332,6 @@ cluster_labels = get_cluster_labels(df)
 # --- Sidebar Settings ---
 with st.sidebar:
     st.header("🔧 Settings")
-    num_clusters = st.slider("Number of Clusters (Themes)", 5, 20, 10)
     severity_threshold = st.slider("Severity Threshold", 0.0, 5.0, 4.0, 0.5)
     st.markdown("---")
     st.subheader("📥 Mural Actions")
@@ -407,22 +408,27 @@ if st.button("🔍 Generate Coverage Feedback"):
                 similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
 
                 # Analyze coverage
-                covered_types = {r['risk_type'] for r in similar_risks}
-                covered_subtypes = {r['risk_subtype'] for r in similar_risks}
-                covered_stakeholders = {r['stakeholder'] for r in similar_risks}
+                covered_types = {r['risk_type'] for r in similar_risks if 'risk_type' in r}
+                covered_subtypes = {r['risk_subtype'] for r in similar_risks if 'risk_subtype' in r}
+                covered_stakeholders = {r['stakeholder'] for r in similar_risks if 'stakeholder' in r}
 
                 # Find missed and underrepresented areas
-                missed_types = sorted(list(set(df['risk_type']) - covered_types))
-                missed_subtypes = sorted(list(set(df['risk_subtype']) - covered_subtypes))
-                missed_stakeholders = sorted(list(set(df['stakeholder']) - covered_stakeholders))
+                all_types = set(df['risk_type'].dropna().unique())
+                all_subtypes = set(df['risk_subtype'].dropna().unique())
+                all_stakeholders = set(df['stakeholder'].dropna().unique())
+
+                missed_types = sorted(list(all_types - covered_types))
+                missed_subtypes = sorted(list(all_subtypes - covered_subtypes))
+                missed_stakeholders = sorted(list(all_stakeholders - covered_stakeholders))
 
                 # Identify underrepresented areas (e.g., if fewer than 10% of expected coverage)
-                human_risk_types = [r['risk_type'] for r in similar_risks]
-                human_subtypes = [r['risk_subtype'] for r in similar_risks]
-                human_stakeholders = [r['stakeholder'] for r in similar_risks]
-                underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
-                underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
-                underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
+                human_risk_types = [r['risk_type'] for r in similar_risks if 'risk_type' in r]
+                human_subtypes = [r['risk_subtype'] for r in similar_risks if 'risk_subtype' in r]
+                human_stakeholders = [r['stakeholder'] for r in similar_risks if 'stakeholder' in r]
+
+                underrepresented_types = [t for t in all_types if human_risk_types.count(t) < df['risk_type'].value_counts().get(t, 0) * 0.1]
+                underrepresented_subtypes = [s for s in all_subtypes if human_subtypes.count(s) < df['risk_subtype'].value_counts().get(s, 0) * 0.1]
+                underrepresented_stakeholders = [s for s in all_stakeholders if human_stakeholders.count(s) < df['stakeholder'].value_counts().get(s, 0) * 0.1]
 
                 # Prepare limited context from CSV for missed and underrepresented areas
                 context_examples = []
@@ -444,7 +450,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                                 example_rows = df[df['stakeholder'] == item].head(1)
                             if not example_rows.empty:
                                 example = example_rows.iloc[0]
-                                context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, Stakeholder: {example['stakeholder']})")
+                                context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, Stakeholder: {example['stakeholder']}, Mitigation: {example['mitigation_suggestion']})")
 
                 context_str = "\n".join(context_examples)
 
@@ -563,7 +569,7 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 filt = filt[filt['risk_type'] == risk_type]
             top_suggestions = filt.sort_values(by='combined_score', ascending=False).head(num_brainstorm_risks)
 
-            suggestions = "\n".join(f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, Stakeholder: {r['stakeholder']})" for r in top_suggestions.to_dict('records'))
+            suggestions = "\n".join(f"- {r['risk_description']} (Type: {r['risk_type']}, Subtype: {r['risk_subtype']}, Stakeholder: {r['stakeholder']}, Mitigation: {r['mitigation_suggestion']})" for r in top_suggestions.to_dict('records'))
 
             # Ensure domain is defined
             domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
@@ -578,9 +584,10 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
             - Risk Subtype
             - Stakeholder
             - Why it matters
+            - Potential mitigation strategy
 
             Format each suggestion as:
-            - Risk: [description] (Type: [type], Subtype: [subtype], Stakeholder: [stakeholder], Why it matters: [reason])
+            - Risk: [description] (Type: [type], Subtype: [subtype], Stakeholder: [stakeholder], Why it matters: [reason], Mitigation: [strategy])
             """
 
             response = openai_client.chat.completions.create(
@@ -591,9 +598,6 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                 ]
             )
             brainstorm_output = response.choices[0].message.content
-
-            # Debug: Display raw output to check format
-            st.write("Raw API Response:", brainstorm_output)
 
             # Extract suggestions
             brainstorm_suggestions = [s.strip() for s in brainstorm_output.split('\n') if s.strip().startswith('- Risk:')]
@@ -690,4 +694,3 @@ if 'mitigation_strategies' in st.session_state:
         st.markdown(f"**Mitigation Strategies:**")
         st.markdown(item['mitigation'])
         st.markdown("---")
-
