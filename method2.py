@@ -268,7 +268,7 @@ if st.session_state.access_token:
             st.session_state.token_timestamp = pd.Timestamp.now().timestamp()
 
 # --- Load Pre-Clustered Data ---
-csv_file = 'clean_risks (9).csv'
+csv_file = 'clean_risks (10).csv'
 embeddings_file = 'embeddings.npy'
 index_file = 'faiss_index.faiss'
 
