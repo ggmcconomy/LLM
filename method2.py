@@ -460,4 +460,211 @@ def embed_and_cluster(df_clean, min_cluster_size=10, embed_model="all-MiniLM-L6-
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
-    index
+    index.add(embeddings)
+    np.save("embeddings.npy", embeddings)
+    faiss.write_index(index, "faiss_index.faiss")
+
+    return df, embeddings
+
+# Main
+async def main():
+    init_state()
+
+    st.title("Enhanced Method 1 - Risk Landscape Modelling")
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    st.subheader("AI Deployment Description")
+    st.session_state["scenario_desc"] = st.text_area(
+        "Scenario Description",
+        value=st.session_state["scenario_desc"],
+        height=120
+    )
+
+    st.sidebar.header("LLM Model & Settings")
+    st.session_state["llm_model"] = st.sidebar.text_input("LLM Model", value=st.session_state["llm_model"])
+    st.session_state["temp"] = st.sidebar.slider("Temperature", 0.0, 1.0, st.session_state["temp"])
+    st.session_state["max_tokens"] = st.sidebar.number_input("Max Tokens", 100, 2000, st.session_state["max_tokens"])
+
+    st.sidebar.subheader("Bayesian Tree Settings")
+    st.session_state["max_depth"] = st.sidebar.slider("Max Depth", 1, 6, st.session_state["max_depth"])
+    st.session_state["time_limit"] = st.sidebar.number_input("Time Limit (sec)", 10, 1800,
+                                                             st.session_state["time_limit"])
+    st.session_state["num_runs"] = st.sidebar.number_input("Number of Runs", 1, 5, st.session_state["num_runs"])
+    st.session_state["enable_critic"] = st.sidebar.checkbox("Enable Critic Explanation?", value=True)
+
+    st.sidebar.subheader("Depth Prompts")
+    for d_ in range(1, st.session_state["max_depth"] + 1):
+        oldp = st.session_state["depth_prompts"].get(d_, f"Depth {d_} - Prompt")
+        newp = st.sidebar.text_area(f"Depth {d_}", value=oldp, height=80)
+        st.session_state["depth_prompts"][d_] = newp
+
+    st.sidebar.subheader("Attributes (Min-Max)")
+    updated_attributes = {}
+    for attr_name, rng in st.session_state["attributes"].items():
+        colA, colB = st.sidebar.columns(2)
+        with colA:
+            low_val = st.number_input(f"{attr_name} (Min)", 1, 10, rng["low"])
+        with colB:
+            high_val = st.number_input(f"{attr_name} (Max)", low_val, 10, rng["high"])
+        updated_attributes[attr_name] = {"low": low_val, "high": high_val}
+    st.session_state["attributes"] = updated_attributes
+
+    st.sidebar.subheader("Classification & Clustering")
+    st.session_state["do_scoring"] = st.sidebar.checkbox("Do Classification & Scoring?", value=True)
+    st.session_state["score_model"] = st.sidebar.selectbox(
+        "Scoring Model",
+        ["gpt-4o", "gpt-4o-mini"],
+        index=1
+    )
+    st.session_state["do_clustering"] = st.sidebar.checkbox("Do Clustering?", value=True)
+    st.session_state["min_cluster_size"] = st.sidebar.number_input("Min Cluster Size", 2, 20,
+                                                                   st.session_state["min_cluster_size"])
+
+    st.subheader("Generate Stakeholders & Agent Personas")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("### Stakeholders (Groups/Organizations)")
+        if st.button("Generate Stakeholders (Over-Inclusive)"):
+            status_text.text("Generating stakeholders...")
+            st_dict = await generate_stakeholders(True, st.session_state["scenario_desc"],
+                                                  st.session_state["llm_model"])
+            st.session_state["stakeholders"].update(st_dict)
+            status_text.text("")
+            st.success("Stakeholders added (over-inclusive).")
+        if st.button("Generate Stakeholders (Moderate)"):
+            status_text.text("Generating stakeholders...")
+            st_dict = await generate_stakeholders(False, st.session_state["scenario_desc"],
+                                                  st.session_state["llm_model"])
+            st.session_state["stakeholders"].update(st_dict)
+            status_text.text("")
+            st.success("Stakeholders added (moderate).")
+
+    with col2:
+        st.write("### Agent Personas (Individual Archetypes)")
+        if st.button("Generate 5-6 Personas"):
+            status_text.text("Generating personas...")
+            p_dict = await generate_personas(st.session_state["scenario_desc"], st.session_state["llm_model"])
+            st.session_state["agent_personas"].update(p_dict)
+            status_text.text("")
+            st.success("Personas added.")
+
+    st.write("#### Current Stakeholders")
+    stake_list = list(st.session_state["stakeholders"].items())
+    updated_stk = {}
+    for nm, wt in stake_list:
+        new_w = st.slider(f"[Stakeholder] {nm} weight", 0.1, 1.0, wt, 0.1)
+        updated_stk[nm] = new_w
+    st.session_state["stakeholders"] = updated_stk
+
+    st.write("#### Current Agent Personas")
+    persona_list = list(st.session_state["agent_personas"].items())
+    updated_pers = {}
+    for nm, wt in persona_list:
+        new_w = st.slider(f"[Persona] {nm} weight", 0.1, 1.0, wt, 0.1, key=f"pers_{nm}")
+        updated_pers[nm] = new_w
+    st.session_state["agent_personas"] = updated_pers
+
+    st.write("#### Remove Stakeholder or Persona")
+    removal = st.text_input("Name to remove")
+    if st.button("Remove Entry"):
+        if removal in st.session_state["stakeholders"]:
+            st.session_state["stakeholders"].pop(removal)
+            st.success(f"Removed stakeholder: {removal}")
+        elif removal in st.session_state["agent_personas"]:
+            st.session_state["agent_personas"].pop(removal)
+            st.success(f"Removed agent persona: {removal}")
+        else:
+            st.warning(f"No stakeholder or persona named '{removal}' found.")
+
+    st.subheader("Select Roles for Discovery")
+    roles_selected = st.multiselect(
+        "Choose sets",
+        ["Stakeholders", "Agent Personas"],
+        default=["Stakeholders", "Agent Personas"]
+    )
+
+    if st.button("Run Discovery"):
+        combined_nodes = {}
+        if "Stakeholders" in roles_selected:
+            combined_nodes.update(st.session_state["stakeholders"])
+        if "Agent Personas" in roles_selected:
+            combined_nodes.update(st.session_state["agent_personas"])
+
+        if not combined_nodes:
+            st.error("No roles selected or available.")
+        else:
+            status_text.text("Running Bayesian expansions...")
+            progress_bar.progress(0.1)
+            expansions_all = []
+            for i in range(st.session_state["num_runs"]):
+                exps = await run_bayesian_tree(
+                    scenario_desc=st.session_state["scenario_desc"],
+                    node_dict=combined_nodes,
+                    temperature=st.session_state["temp"],
+                    max_tokens=st.session_state["max_tokens"],
+                    max_depth=st.session_state["max_depth"],
+                    time_limit=st.session_state["time_limit"],
+                    run_index=i,
+                    enable_critic=st.session_state["enable_critic"],
+                    llm_model=st.session_state["llm_model"],
+                    attributes=st.session_state["attributes"]
+                )
+                expansions_all.extend(exps)
+                progress_bar.progress(0.1 + 0.3 * (i + 1) / st.session_state["num_runs"])
+
+            status_text.text("Building dataframes...")
+            df_detailed, df_clean = build_dataframes_from_expansions(expansions_all)
+            progress_bar.progress(0.6)
+
+            if st.session_state["do_scoring"]:
+                status_text.text("Classifying, scoring, and suggesting mitigations...")
+                df_clean = await second_pass_classify_score_mitigate(
+                    df_clean,
+                    st.session_state["scenario_desc"],
+                    st.session_state["attributes"],
+                    st.session_state["score_model"]
+                )
+                progress_bar.progress(0.8)
+
+            status_text.text("Deduplicating risks...")
+            df_clean = deduplicate_risks(df_clean, st.session_state["embedder"])
+            progress_bar.progress(0.9)
+
+            if st.session_state["do_clustering"]:
+                status_text.text("Embedding & clustering...")
+                df_clean, embeddings = embed_and_cluster(
+                    df_clean,
+                    min_cluster_size=st.session_state["min_cluster_size"]
+                )
+                progress_bar.progress(1.0)
+
+            st.session_state["results_detailed"] = df_detailed
+            st.session_state["results_clean"] = df_clean
+            status_text.text("")
+            st.success("Discovery complete.")
+
+    if not st.session_state["results_detailed"].empty:
+        st.subheader("Detailed Log")
+        df_det = st.session_state["results_detailed"]
+        st.dataframe(df_det.tail(30))
+        csv_det = df_det.to_csv(index=False)
+        st.download_button("Download Detailed CSV", data=csv_det, file_name="detailed_log.csv", mime="text/csv")
+
+    if not st.session_state["results_clean"].empty:
+        st.subheader("Clean Discovered Risks")
+        df_cl = st.session_state["results_clean"]
+        st.dataframe(df_cl.head(50))
+        csv_cl = df_cl.to_csv(index=False)
+        st.download_button("Download Clean Risks CSV", data=csv_cl, file_name="clean_risks.csv", mime="text/csv")
+        st.info("embeddings.npy & faiss_index.faiss saved (if clustering enabled).")
+
+    if st.button("Reset All"):
+        st.session_state["results_detailed"] = pd.DataFrame()
+        st.session_state["results_clean"] = pd.DataFrame()
+        st.session_state["stakeholders"].clear()
+        st.session_state["agent_personas"].clear()
+        st.success("Cleared roles & results.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
