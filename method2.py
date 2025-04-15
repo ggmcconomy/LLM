@@ -381,7 +381,7 @@ user_input = st.text_area("", value=default_text, height=200, placeholder="Enter
 
 # --- Section 2: Generate Coverage Feedback ---
 st.subheader("2️⃣ Coverage Feedback")
-st.write("Analyze gaps in your risk coverage with heatmaps.")
+st.write("Analyze gaps in your risk coverage with examples.")
 if st.button("🔍 Generate Coverage Feedback"):
     with st.spinner("Analyzing coverage..."):
         if user_input.strip():
@@ -393,33 +393,135 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                 # Analyze coverage
                 covered_types = {r['risk_type'] for r in similar_risks}
+                covered_subtypes = {r['risk_subtype'] for r in similar_risks}
+                covered_stakeholders = {r['stakeholder'] for r in similar_risks}
+                covered_horizons = {r['time_horizon'] for r in similar_risks}
                 covered_drivers = {r['driver'] for r in similar_risks}
+                covered_clusters = {r['cluster'] for r in similar_risks}
 
-                # Find missed areas
+                # Find missed and underrepresented areas
                 missed_types = sorted(list(set(df['risk_type']) - covered_types))
+                missed_subtypes = sorted(list(set(df['risk_subtype']) - covered_subtypes))
+                missed_stakeholders = sorted(list(set(df['stakeholder']) - covered_stakeholders))
+                missed_horizons = sorted(list(set(df['time_horizon']) - covered_horizons))
                 missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
+                missed_clusters = sorted(list(set(df['cluster']) - covered_clusters))
 
-                # Prepare data for heatmaps
-                # Severity Heatmap Data
-                severity_data = df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
+                # Identify underrepresented areas
+                human_risk_types = [r['risk_type'] for r in similar_risks]
+                human_subtypes = [r['risk_subtype'] for r in similar_risks]
+                human_stakeholders = [r['stakeholder'] for r in similar_risks]
+                human_horizons = [r['time_horizon'] for r in similar_risks]
+                human_drivers = [r['driver'] for r in similar_risks]
+                human_clusters = [r['cluster'] for r in similar_risks]
 
-                # Blindspots Heatmap Data
-                missed_df = df[df['risk_type'].isin(missed_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
+                underrepresented_types = [t for t in df['risk_type'].unique() if human_risk_types.count(t) < df['risk_type'].value_counts()[t] * 0.1]
+                underrepresented_subtypes = [s for s in df['risk_subtype'].unique() if human_subtypes.count(s) < df['risk_subtype'].value_counts()[s] * 0.1]
+                underrepresented_stakeholders = [s for s in df['stakeholder'].unique() if human_stakeholders.count(s) < df['stakeholder'].value_counts()[s] * 0.1]
+                underrepresented_horizons = [h for h in df['time_horizon'].unique() if human_horizons.count(h) < df['time_horizon'].value_counts()[h] * 0.1]
+                underrepresented_drivers = [d for d in df['driver'].unique() if human_drivers.count(d) < df['driver'].value_counts()[d] * 0.1]
+                underrepresented_clusters = [c for c in df['cluster'].unique() if human_clusters.count(c) < df['cluster'].value_counts()[c] * 0.1]
 
-                # Fusion Heatmap Data
-                fusion_df = df.copy()
-                fusion_df['is_missed'] = fusion_df['risk_type'].isin(missed_types)
-                fusion_df['combined_score'] = fusion_df['severity'] * fusion_df['is_missed'].astype(int)
-                fusion_df = fusion_df.groupby(['risk_type', 'driver'])['combined_score'].mean().reset_index()
+                # Prepare context examples
+                context_examples = []
+                for category, items in [
+                    ("Missed Risk Types", missed_types),
+                    ("Missed Risk Subtypes", missed_subtypes),
+                    ("Missed Stakeholders", missed_stakeholders),
+                    ("Missed Time Horizons", missed_horizons),
+                    ("Missed Drivers", missed_drivers),
+                    ("Missed Clusters", missed_clusters),
+                    ("Underrepresented Risk Types", underrepresented_types),
+                    ("Underrepresented Risk Subtypes", underrepresented_subtypes),
+                    ("Underrepresented Stakeholders", underrepresented_stakeholders),
+                    ("Underrepresented Time Horizons", underrepresented_horizons),
+                    ("Underrepresented Drivers", underrepresented_drivers),
+                    ("Underrepresented Clusters", underrepresented_clusters)
+                ]:
+                    if items:
+                        for item in items[:3]:
+                            if "Types" in category:
+                                example_rows = df[df['risk_type'] == item].head(1)
+                            elif "Subtypes" in category:
+                                example_rows = df[df['risk_subtype'] == item].head(1)
+                            elif "Stakeholders" in category:
+                                example_rows = df[df['stakeholder'] == item].head(1)
+                            elif "Horizons" in category:
+                                example_rows = df[df['time_horizon'] == item].head(1)
+                            elif "Drivers" in category:
+                                example_rows = df[df['driver'] == item].head(1)
+                            elif "Clusters" in category:
+                                example_rows = df[df['cluster'] == item].head(1)
+                            if not example_rows.empty:
+                                example = example_rows.iloc[0]
+                                context_examples.append(
+                                    f"{category}: {item} - Example: {example['risk_description']} "
+                                    f"(Type: {example['risk_type']}, Subtype: {example['risk_subtype']}, "
+                                    f"Stakeholder: {example['stakeholder']}, Time Horizon: {example['time_horizon']}, "
+                                    f"Driver: {example['driver']}, Cluster: {cluster_labels[example['cluster']]})"
+                                )
 
-                # Generate heatmaps
-                create_heatmap(severity_data, 'severity', 'risk_type', 'driver', 'Risk Severity Heatmap', 'severity_heatmap.png')
-                create_blindspots_heatmap(missed_df, 'risk_type', 'driver', 'Blindspots Heatmap', 'blindspots_heatmap.png')
-                create_fusion_heatmap(fusion_df, 'risk_type', 'driver', 'Fusion Heatmap: High-Risk Blindspots', 'fusion_heatmap.png')
+                context_str = "\n".join(context_examples)
 
-                # Store feedback
-                st.session_state['feedback'] = "Coverage feedback generated successfully."
-                st.session_state['heatmaps_generated'] = True
+                # Prepare coverage feedback prompt
+                domain = df['domain'].iloc[0] if 'domain' in df.columns else "AI deployment"
+                prompt = f"""
+                You are an AI risk analysis expert for {domain}, focusing solely on harms identification. The user has identified these finalized risks from Mural:
+                {chr(10).join(f'- {r}' for r in human_risks)}
+
+                Using the following examples from the risk database:
+                {context_str}
+
+                Provide feedback on the gaps in the user's harms analysis, focusing on risk types, subtypes, stakeholders, time horizons, drivers, and clusters that are overlooked or insufficiently developed:
+
+                1. **Missing Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
+                   - Identify categories completely missing from the user's risks and explain why they are critical.
+                   - Use the provided examples to illustrate comprehensive coverage.
+
+                2. **Underrepresented Risk Types, Subtypes, Stakeholders, Time Horizons, Drivers, or Clusters**:
+                   - Highlight categories that lack depth or breadth.
+                   - Explain how this limits the analysis and use examples to show what could be added.
+
+                3. **Suggestions for Improvement**:
+                   - Offer actionable advice on addressing these gaps by adding or expanding risks in Mural.
+
+                Ensure feedback is constructive and tied to the examples, emphasizing comprehensive harms analysis.
+                """
+
+                try:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": "You are a helpful AI risk advisor specializing in harms identification."},
+                            {"role": "user", "content": prompt}
+                        ]
+                    )
+                    feedback = response.choices[0].message.content
+                except Exception as e:
+                    st.error(f"OpenAI API error: {str(e)}")
+                    feedback = None
+
+                if feedback:
+                    # Prepare data for heatmaps
+                    # Severity Heatmap Data
+                    severity_data = df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
+
+                    # Blindspots Heatmap Data
+                    missed_df = df[df['risk_type'].isin(missed_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
+
+                    # Fusion Heatmap Data
+                    fusion_df = df.copy()
+                    fusion_df['is_missed'] = fusion_df['risk_type'].isin(missed_types)
+                    fusion_df['combined_score'] = fusion_df['severity'] * fusion_df['is_missed'].astype(int)
+                    fusion_df = fusion_df.groupby(['risk_type', 'driver'])['combined_score'].mean().reset_index()
+
+                    # Generate heatmaps
+                    create_heatmap(severity_data, 'severity', 'risk_type', 'driver', 'Risk Severity Heatmap', 'severity_heatmap.png')
+                    create_blindspots_heatmap(missed_df, 'risk_type', 'driver', 'Blindspots Heatmap', 'blindspots_heatmap.png')
+                    create_fusion_heatmap(fusion_df, 'risk_type', 'driver', 'Fusion Heatmap: High-Risk Blindspots', 'fusion_heatmap.png')
+
+                    st.session_state['feedback'] = feedback
+                    st.session_state['heatmaps_generated'] = True
             except Exception as e:
                 st.error(f"Error processing risks: {str(e)}")
         else:
@@ -432,16 +534,24 @@ if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_gener
     col1, col2, col3 = st.columns(3)
     try:
         with col1:
-            st.image("severity_heatmap.png", caption="Risk Severity Heatmap", use_container_width=True)
+            st.image("severity_heatmap.png", caption="Risk Severity Heatmap: Darker colors indicate higher severity.", use_container_width=True)
         with col2:
-            st.image("blindspots_heatmap.png", caption="Blindspots Heatmap", use_container_width=True)
+            st.image("blindspots_heatmap.png", caption="Blindspots Heatmap: Missed risk areas.", use_container_width=True)
         with col3:
-            st.image("fusion_heatmap.png", caption="Fusion Heatmap: High-Risk Blindspots", use_container_width=True)
+            st.image("fusion_heatmap.png", caption="Fusion Heatmap: High-Risk Blindspots.", use_container_width=True)
     except FileNotFoundError:
         st.error("Heatmaps failed to generate. Please try generating feedback again.")
 
-# --- Section 4: Brainstorm Risks ---
-st.subheader("4️⃣ Brainstorm Risks")
+# --- Section 4: Coverage Feedback (Textual) ---
+if 'feedback' in st.session_state:
+    st.subheader("4️⃣ Coverage Feedback (Textual)")
+    st.write("Review gaps in your risk analysis with examples to inspire additions to Mural.")
+    st.markdown("### Coverage Feedback:")
+    st.markdown(st.session_state['feedback'])
+    st.info("Add inspired risks to Mural based on these examples, then re-pull Mural data for further analysis.")
+
+# --- Section 5: Brainstorm Risks ---
+st.subheader("5️⃣ Brainstorm Risks")
 st.write("Generate creative risk suggestions to broaden your analysis.")
 num_brainstorm_risks = st.slider("Number of Suggestions", 1, 5, 5, key="num_brainstorm_risks")
 stakeholder_options = sorted(df['stakeholder'].dropna().unique())
@@ -541,8 +651,8 @@ if 'brainstorm_suggestions' in st.session_state and st.session_state['brainstorm
 else:
     st.info("No suggestions available. Click 'Generate Risk Suggestions' to create new ideas.")
 
-# --- Section 5: Mitigation Strategies ---
-st.subheader("5️⃣ Mitigation Strategies")
+# --- Section 6: Mitigation Strategies ---
+st.subheader("6️⃣ Mitigation Strategies")
 st.write("Review human-centric mitigation strategies for each finalized Mural risk.")
 if st.button("🔧 Generate Mitigation Strategies"):
     with st.spinner("Generating mitigation strategies..."):
