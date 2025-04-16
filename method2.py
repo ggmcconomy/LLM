@@ -380,7 +380,7 @@ default_notes = st.session_state.get('mural_notes', [])
 default_text = "\n".join(default_notes) if default_notes else ""
 user_input = st.text_area("", value=default_text, height=200, placeholder="Enter risks, one per line.")
 
-# --- Section 2: Generate Coverage Feedback (updated to use severity_threshold) ---
+# --- Section 2: Generate Coverage Feedback (updated to display feedback) ---
 st.subheader("2️⃣ Coverage Feedback")
 st.write("Analyze gaps in your risk coverage with examples.")
 if st.button("🔍 Generate Coverage Feedback"):
@@ -574,11 +574,32 @@ if st.button("🔍 Generate Coverage Feedback"):
 
                     st.session_state['feedback'] = feedback
                     st.session_state['heatmaps_generated'] = True
+
+                    # Display the textual feedback
+                    st.markdown("### Coverage Feedback:")
+                    st.write(feedback)
+
             except Exception as e:
                 st.error(f"Error processing risks: {str(e)}")
         else:
             st.warning("Please enter or pull some risks first.")
 
+# Display Generated Heatmaps (ensure this section exists to display the heatmaps)
+if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_generated']:
+    st.markdown("### Risk Analysis Heatmaps:")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.image("severity_heatmap.png", caption="Risk Severity Heatmap: Darker colors indicate higher severity.")
+    with col2:
+        if os.path.exists("blindspots_heatmap.png"):
+            st.image("blindspots_heatmap.png", caption="Blindspots Heatmap: Missed risk areas.")
+        else:
+            st.write("Blindspots Heatmap not generated.")
+    with col3:
+        st.image("fusion_heatmap.png", caption="Fusion Heatmap: High-Risk Blindspots.")
+else:
+    st.info("Click 'Generate Coverage Feedback' to see risk analysis heatmaps.")
+    
 # --- Section 3: Coverage Visualization ---
 if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_generated']:
     st.subheader("3️⃣ Coverage Visualization")
@@ -594,7 +615,7 @@ if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_gener
     except FileNotFoundError:
         st.error("Heatmaps failed to generate. Please try generating feedback again.")
 
-# --- Section 4: Cluster Risks (updated to use num_clusters) ---
+# --- Section 4: Cluster Risks (already updated, included for completeness) ---
 st.subheader("4️⃣ Cluster Risks")
 st.write("Explore similar risks by clustering.")
 if st.button("🗂️ Cluster Risks"):
@@ -610,10 +631,8 @@ if st.button("🗂️ Cluster Risks"):
             embeddings = np.array(embedder.encode(texts, show_progress_bar=True))
 
             # Adjust min_cluster_size based on num_clusters
-            # Smaller min_cluster_size leads to more clusters, larger leads to fewer
-            # We invert num_clusters to influence min_cluster_size: higher num_clusters -> smaller min_cluster_size
             total_risks = len(texts)
-            min_cluster_size = max(2, int(total_risks / (num_clusters * 2)))  # Adjust divisor to control sensitivity
+            min_cluster_size = max(2, int(total_risks / (num_clusters * 2)))
 
             clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, gen_min_span_tree=True)
             cluster_labels = clusterer.fit_predict(embeddings)
