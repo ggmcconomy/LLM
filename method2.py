@@ -608,8 +608,8 @@ if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_gener
     except FileNotFoundError:
         st.error("Heatmaps failed to generate. Please try generating feedback again.")
     
-# --- Section 5: Brainstorm Risks ---
-st.subheader("5️⃣ Brainstorm Risks")
+# --- Section 3: Brainstorm Risks (renumbered from 5 to 3) ---
+st.subheader("3️⃣ Brainstorm Risks")
 st.write("Generate creative risk suggestions to broaden your analysis.")
 num_brainstorm_risks = st.slider("Number of Suggestions", 1, 5, 5, key="num_brainstorm_risks")
 stakeholder_options = sorted(df['stakeholder'].dropna().unique())
@@ -730,8 +730,8 @@ if 'brainstorm_suggestions' in st.session_state and st.session_state['brainstorm
 else:
     st.info("No suggestions available. Click 'Generate Risk Suggestions' to create new ideas.")
 
-# --- Section 6: Mitigation Strategies ---
-st.subheader("6️⃣ Mitigation Strategies")
+# --- Section 4: Mitigation Strategies ---
+st.subheader("4️⃣ Mitigation Strategies")
 st.write("Review human-centric mitigation strategies for each finalized Mural risk.")
 if st.button("🔧 Generate Mitigation Strategies"):
     with st.spinner("Generating mitigation strategies..."):
