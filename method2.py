@@ -407,43 +407,50 @@ if st.button("🔍 Generate Coverage Feedback"):
                 missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
                 missed_clusters = sorted(list(set(df['cluster']) - covered_clusters))
 
-                # Identify underrepresented areas
-                human_risk_types = [r['risk_type'] for r in similar_risks]
-                human_subtypes = [r['risk_subtype'] for r in similar_risks]
-                human_stakeholders = [r['stakeholder'] for r in similar_risks]
-                human_horizons = [r['time_horizon'] for r in similar_risks]
-                human_drivers = [r['driver'] for r in similar_risks]
-                human_clusters = [r['cluster'] for r in similar_risks]
-
                 # Calculate expected frequencies based on dataset
                 total_risks = len(df)
                 expected_type_freq = df['risk_type'].value_counts() / total_risks
-                actual_type_freq = pd.Series(human_risk_types).value_counts() / len(human_risk_types)
+                actual_type_freq = pd.Series([r['risk_type'] for r in similar_risks]).value_counts() / len(similar_risks)
 
-                # Define underrepresented types (not just missed, but also below expected frequency)
+                # Debug: Display distributions
+                st.write("**Debug: Distribution of Risk Types in Dataset (df):**")
+                st.write(expected_type_freq)
+                st.write("**Debug: Distribution of Risk Types in User Input (similar_risks):**")
+                st.write(actual_type_freq)
+
+                # Define underrepresented types with a dynamic threshold
+                # Use a softer threshold: flag types where actual frequency is less than 70% of expected, or adjust based on input size
+                input_size_factor = max(1, len(similar_risks) / 10)  # Adjust threshold based on input size
                 underrepresented_types = [
                     t for t in df['risk_type'].unique()
-                    if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.5)
+                    if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.7 / input_size_factor)
                 ]
+
+                # Ensure at least some risk types are included, even if not strictly underrepresented
+                if len(underrepresented_types) < 3 and len(missed_types) < 3:
+                    # Add the least represented types to ensure some diversity
+                    sorted_types = expected_type_freq.index.tolist()
+                    underrepresented_types.extend([t for t in sorted_types if t not in covered_types and t not in underrepresented_types][:3])
+
                 underrepresented_subtypes = [
                     s for s in df['risk_subtype'].unique()
-                    if human_subtypes.count(s) < (df['risk_subtype'].value_counts().get(s, 0) * 0.1)
+                    if s not in covered_subtypes and pd.Series([r['risk_subtype'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (df['risk_subtype'].value_counts().get(s, 0) / total_risks * 0.1)
                 ]
                 underrepresented_stakeholders = [
                     s for s in df['stakeholder'].unique()
-                    if human_stakeholders.count(s) < (df['stakeholder'].value_counts().get(s, 0) * 0.1)
+                    if s not in covered_stakeholders and pd.Series([r['stakeholder'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (df['stakeholder'].value_counts().get(s, 0) / total_risks * 0.1)
                 ]
                 underrepresented_horizons = [
                     h for h in df['time_horizon'].unique()
-                    if human_horizons.count(h) < (df['time_horizon'].value_counts().get(h, 0) * 0.1)
+                    if h not in covered_horizons and pd.Series([r['time_horizon'] for r in similar_risks]).value_counts().get(h, 0) / len(similar_risks) < (df['time_horizon'].value_counts().get(h, 0) / total_risks * 0.1)
                 ]
                 underrepresented_drivers = [
                     d for d in df['driver'].unique()
-                    if human_drivers.count(d) < (df['driver'].value_counts().get(d, 0) * 0.1)
+                    if d not in covered_drivers and pd.Series([r['driver'] for r in similar_risks]).value_counts().get(d, 0) / len(similar_risks) < (df['driver'].value_counts().get(d, 0) / total_risks * 0.1)
                 ]
                 underrepresented_clusters = [
                     c for c in df['cluster'].unique()
-                    if human_clusters.count(c) < (df['cluster'].value_counts().get(c, 0) * 0.1)
+                    if c not in covered_clusters and pd.Series([r['cluster'] for r in similar_risks]).value_counts().get(c, 0) / len(similar_risks) < (df['cluster'].value_counts().get(c, 0) / total_risks * 0.1)
                 ]
 
                 # Prepare context examples
@@ -530,11 +537,19 @@ if st.button("🔍 Generate Coverage Feedback"):
                     # Severity Heatmap Data
                     severity_data = df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
 
-                    # Blindspots Heatmap Data - Use underrepresented types instead of missed_types
+                    # Blindspots Heatmap Data - Use underrepresented types
                     missed_and_underrepresented_types = list(set(missed_types + underrepresented_types))
                     missed_df = df[df['risk_type'].isin(missed_and_underrepresented_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
 
-                    # Fusion Heatmap Data - Weighted combination instead of binary missed status
+                    # Normalize missed_count to a range (e.g., 0 to 10) to avoid extreme values
+                    if not missed_df.empty:
+                        max_count = missed_df['missed_count'].max()
+                        if max_count > 0:
+                            missed_df['missed_count'] = (missed_df['missed_count'] / max_count) * 10
+                        else:
+                            missed_df['missed_count'] = 0
+
+                    # Fusion Heatmap Data - Weighted combination
                     fusion_df = df.copy()
                     # Normalize missed_count for underrepresented types
                     if not missed_df.empty:
