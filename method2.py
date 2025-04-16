@@ -379,17 +379,23 @@ default_notes = st.session_state.get('mural_notes', [])
 default_text = "\n".join(default_notes) if default_notes else ""
 user_input = st.text_area("", value=default_text, height=200, placeholder="Enter risks, one per line.")
 
-# --- Section 2: Generate Coverage Feedback ---
+# --- Section 2: Generate Coverage Feedback (updated to use severity_threshold) ---
 st.subheader("2️⃣ Coverage Feedback")
 st.write("Analyze gaps in your risk coverage with examples.")
 if st.button("🔍 Generate Coverage Feedback"):
     with st.spinner("Analyzing coverage..."):
         if user_input.strip():
             try:
+                # Filter the dataset based on severity threshold
+                filtered_df = df[df['severity'] >= severity_threshold]
+                if filtered_df.empty:
+                    st.warning("No risks meet the severity threshold. Please lower the threshold and try again.")
+                    st.stop()
+
                 human_risks = [r.strip() for r in user_input.split('\n') if r.strip()]
                 human_embeddings = np.array(embedder.encode(human_risks))
                 distances, indices = index.search(human_embeddings, 5)
-                similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
+                similar_risks = [filtered_df.iloc[idx].to_dict() for idx in indices.flatten()]
 
                 # Analyze coverage
                 covered_types = {r['risk_type'] for r in similar_risks}
@@ -400,22 +406,22 @@ if st.button("🔍 Generate Coverage Feedback"):
                 covered_clusters = {r['cluster'] for r in similar_risks}
 
                 # Find missed and underrepresented areas
-                missed_types = sorted(list(set(df['risk_type']) - covered_types))
-                missed_subtypes = sorted(list(set(df['risk_subtype']) - covered_subtypes))
-                missed_stakeholders = sorted(list(set(df['stakeholder']) - covered_stakeholders))
-                missed_horizons = sorted(list(set(df['time_horizon']) - covered_horizons))
-                missed_drivers = sorted(list(set(df['driver']) - covered_drivers))
-                missed_clusters = sorted(list(set(df['cluster']) - covered_clusters))
+                missed_types = sorted(list(set(filtered_df['risk_type']) - covered_types))
+                missed_subtypes = sorted(list(set(filtered_df['risk_subtype']) - covered_subtypes))
+                missed_stakeholders = sorted(list(set(filtered_df['stakeholder']) - covered_stakeholders))
+                missed_horizons = sorted(list(set(filtered_df['time_horizon']) - covered_horizons))
+                missed_drivers = sorted(list(set(filtered_df['driver']) - covered_drivers))
+                missed_clusters = sorted(list(set(filtered_df['cluster']) - covered_clusters))
 
-                # Calculate expected frequencies based on dataset
-                total_risks = len(df)
-                expected_type_freq = df['risk_type'].value_counts() / total_risks
+                # Calculate expected frequencies based on filtered dataset
+                total_risks = len(filtered_df)
+                expected_type_freq = filtered_df['risk_type'].value_counts() / total_risks
                 actual_type_freq = pd.Series([r['risk_type'] for r in similar_risks]).value_counts() / len(similar_risks)
 
                 # Define underrepresented types with a softer threshold
                 input_size_factor = max(1, len(similar_risks) / 50)
                 underrepresented_types = [
-                    t for t in df['risk_type'].unique()
+                    t for t in filtered_df['risk_type'].unique()
                     if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.9 / input_size_factor)
                 ]
 
@@ -427,24 +433,24 @@ if st.button("🔍 Generate Coverage Feedback"):
                         underrepresented_types.extend([t for t in sorted_types if t not in underrepresented_types][:3])
 
                 underrepresented_subtypes = [
-                    s for s in df['risk_subtype'].unique()
-                    if s not in covered_subtypes and pd.Series([r['risk_subtype'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (df['risk_subtype'].value_counts().get(s, 0) / total_risks * 0.1)
+                    s for s in filtered_df['risk_subtype'].unique()
+                    if s not in covered_subtypes and pd.Series([r['risk_subtype'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (filtered_df['risk_subtype'].value_counts().get(s, 0) / total_risks * 0.1)
                 ]
                 underrepresented_stakeholders = [
-                    s for s in df['stakeholder'].unique()
-                    if s not in covered_stakeholders and pd.Series([r['stakeholder'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (df['stakeholder'].value_counts().get(s, 0) / total_risks * 0.1)
+                    s for s in filtered_df['stakeholder'].unique()
+                    if s not in covered_stakeholders and pd.Series([r['stakeholder'] for r in similar_risks]).value_counts().get(s, 0) / len(similar_risks) < (filtered_df['stakeholder'].value_counts().get(s, 0) / total_risks * 0.1)
                 ]
                 underrepresented_horizons = [
-                    h for h in df['time_horizon'].unique()
-                    if h not in covered_horizons and pd.Series([r['time_horizon'] for r in similar_risks]).value_counts().get(h, 0) / len(similar_risks) < (df['time_horizon'].value_counts().get(h, 0) / total_risks * 0.1)
+                    h for h in filtered_df['time_horizon'].unique()
+                    if h not in covered_horizons and pd.Series([r['time_horizon'] for r in similar_risks]).value_counts().get(h, 0) / len(similar_risks) < (filtered_df['time_horizon'].value_counts().get(h, 0) / total_risks * 0.1)
                 ]
                 underrepresented_drivers = [
-                    d for d in df['driver'].unique()
-                    if d not in covered_drivers and pd.Series([r['driver'] for r in similar_risks]).value_counts().get(d, 0) / len(similar_risks) < (df['driver'].value_counts().get(d, 0) / total_risks * 0.1)
+                    d for d in filtered_df['driver'].unique()
+                    if d not in covered_drivers and pd.Series([r['driver'] for r in similar_risks]).value_counts().get(d, 0) / len(similar_risks) < (filtered_df['driver'].value_counts().get(d, 0) / total_risks * 0.1)
                 ]
                 underrepresented_clusters = [
-                    c for c in df['cluster'].unique()
-                    if c not in covered_clusters and pd.Series([r['cluster'] for r in similar_risks]).value_counts().get(c, 0) / len(similar_risks) < (df['cluster'].value_counts().get(c, 0) / total_risks * 0.1)
+                    c for c in filtered_df['cluster'].unique()
+                    if c not in covered_clusters and pd.Series([r['cluster'] for r in similar_risks]).value_counts().get(c, 0) / len(similar_risks) < (filtered_df['cluster'].value_counts().get(c, 0) / total_risks * 0.1)
                 ]
 
                 # Prepare context examples
@@ -466,17 +472,17 @@ if st.button("🔍 Generate Coverage Feedback"):
                     if items:
                         for item in items[:3]:
                             if "Types" in category:
-                                example_rows = df[df['risk_type'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['risk_type'] == item].head(1)
                             elif "Subtypes" in category:
-                                example_rows = df[df['risk_subtype'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['risk_subtype'] == item].head(1)
                             elif "Stakeholders" in category:
-                                example_rows = df[df['stakeholder'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['stakeholder'] == item].head(1)
                             elif "Horizons" in category:
-                                example_rows = df[df['time_horizon'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['time_horizon'] == item].head(1)
                             elif "Drivers" in category:
-                                example_rows = df[df['driver'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['driver'] == item].head(1)
                             elif "Clusters" in category:
-                                example_rows = df[df['cluster'] == item].head(1)
+                                example_rows = filtered_df[filtered_df['cluster'] == item].head(1)
                             if not example_rows.empty:
                                 example = example_rows.iloc[0]
                                 context_examples.append(
@@ -494,7 +500,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                 You are an AI risk analysis expert for {domain}, focusing solely on harms identification. The user has identified these finalized risks from Mural:
                 {chr(10).join(f'- {r}' for r in human_risks)}
 
-                Using the following examples from the risk database:
+                Using the following examples from the risk database (filtered for severity >= {severity_threshold}):
                 {context_str}
 
                 Provide feedback on the gaps in the user's harms analysis, focusing on risk types, subtypes, stakeholders, time horizons, drivers, and clusters that are overlooked or insufficiently developed:
@@ -529,11 +535,11 @@ if st.button("🔍 Generate Coverage Feedback"):
                 if feedback:
                     # Prepare data for heatmaps
                     # Severity Heatmap Data
-                    severity_data = df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
+                    severity_data = filtered_df.groupby(['risk_type', 'driver'])['severity'].mean().reset_index()
 
                     # Blindspots Heatmap Data - Use underrepresented types
                     missed_and_underrepresented_types = list(set(missed_types + underrepresented_types))
-                    missed_df = df[df['risk_type'].isin(missed_and_underrepresented_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
+                    missed_df = filtered_df[filtered_df['risk_type'].isin(missed_and_underrepresented_types)].groupby(['risk_type', 'driver']).size().reset_index(name='missed_count')
 
                     # Normalize missed_count to a range (e.g., 0 to 10) to avoid extreme values
                     if not missed_df.empty:
@@ -547,7 +553,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                         missed_df = pd.DataFrame(columns=['risk_type', 'driver', 'missed_count'])
 
                     # Fusion Heatmap Data - Weighted combination
-                    fusion_df = df.copy()
+                    fusion_df = filtered_df.copy()
                     if not missed_df.empty:
                         missed_df['missed_weight'] = missed_df['missed_count'] / missed_df['missed_count'].max()
                         missed_dict = {(row['risk_type'], row['driver']): row['missed_weight'] for _, row in missed_df.iterrows()}
@@ -587,14 +593,68 @@ if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_gener
     except FileNotFoundError:
         st.error("Heatmaps failed to generate. Please try generating feedback again.")
 
-# --- Section 4: Coverage Feedback (Textual) ---
-if 'feedback' in st.session_state:
-    st.subheader("4️⃣ Coverage Feedback (Textual)")
-    st.write("Review gaps in your risk analysis with examples to inspire additions to Mural.")
-    st.markdown("### Coverage Feedback:")
-    st.markdown(st.session_state['feedback'])
-    st.info("Add inspired risks to Mural based on these examples, then re-pull Mural data for further analysis.")
+# --- Section 4: Cluster Risks (updated to use num_clusters) ---
+st.subheader("4️⃣ Cluster Risks")
+st.write("Explore similar risks by clustering.")
+if st.button("🗂️ Cluster Risks"):
+    with st.spinner("Clustering risks..."):
+        try:
+            # Filter the dataset based on severity threshold
+            filtered_df = df[df['severity'] >= severity_threshold]
+            if filtered_df.empty:
+                st.warning("No risks meet the severity threshold. Please lower the threshold and try again.")
+                st.stop()
 
+            texts = filtered_df['risk_description'].tolist()
+            embeddings = np.array(embedder.encode(texts, show_progress_bar=True))
+
+            # Adjust min_cluster_size based on num_clusters
+            # Smaller min_cluster_size leads to more clusters, larger leads to fewer
+            # We invert num_clusters to influence min_cluster_size: higher num_clusters -> smaller min_cluster_size
+            total_risks = len(texts)
+            min_cluster_size = max(2, int(total_risks / (num_clusters * 2)))  # Adjust divisor to control sensitivity
+
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, gen_min_span_tree=True)
+            cluster_labels = clusterer.fit_predict(embeddings)
+
+            filtered_df = filtered_df.copy()
+            filtered_df['cluster'] = cluster_labels
+            cluster_counts = pd.Series(cluster_labels).value_counts()
+
+            if len(cluster_counts) <= 1:
+                st.warning("Clustering produced fewer than 2 clusters. Try adjusting the number of clusters or severity threshold.")
+            else:
+                st.session_state['clustered_df'] = filtered_df
+                st.session_state['cluster_counts'] = cluster_counts
+
+        except Exception as e:
+            st.error(f"Error clustering risks: {str(e)}")
+
+# Display Clustered Risks
+if 'clustered_df' in st.session_state and 'cluster_counts' in st.session_state:
+    clustered_df = st.session_state['clustered_df']
+    cluster_counts = st.session_state['cluster_counts']
+    st.markdown("### Clustered Risks:")
+    st.write(f"Found {len(cluster_counts) - 1 if -1 in cluster_counts else len(cluster_counts)} clusters (excluding noise).")
+
+    for cluster_id in sorted(cluster_counts.index):
+        if cluster_id == -1:
+            continue  # Skip noise cluster for now
+        cluster_size = cluster_counts[cluster_id]
+        st.markdown(f"**Cluster {cluster_id} ({cluster_size} risks):**")
+        cluster_risks = clustered_df[clustered_df['cluster'] == cluster_id].sort_values(by='combined_score', ascending=False)
+        for _, row in cluster_risks.head(3).iterrows():
+            st.write(f"- {row['risk_description']} (Severity: {row['severity']:.1f}, Probability: {row['probability']:.1f})")
+
+    if -1 in cluster_counts:
+        noise_size = cluster_counts[-1]
+        st.markdown(f"**Noise (-1) ({noise_size} risks):**")
+        noise_risks = clustered_df[clustered_df['cluster'] == -1].sort_values(by='combined_score', ascending=False)
+        for _, row in noise_risks.head(3).iterrows():
+            st.write(f"- {row['risk_description']} (Severity: {row['severity']:.1f}, Probability: {row['probability']:.1f})")
+else:
+    st.info("Click 'Cluster Risks' to group similar risks.")
+    
 # --- Section 5: Brainstorm Risks ---
 st.subheader("5️⃣ Brainstorm Risks")
 st.write("Generate creative risk suggestions to broaden your analysis.")
