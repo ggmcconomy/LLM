@@ -18,6 +18,7 @@ import seaborn as sns
 from sentence_transformers import SentenceTransformer
 import faiss
 from openai import OpenAI
+import hdbscan
 
 # Temporarily disable torch.classes to avoid Streamlit watcher error
 sys.modules['torch.classes'] = None
