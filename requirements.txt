@@ -11,3 +11,4 @@ bs4==0.0.2
 matplotlib==3.9.2
 seaborn
 plotly
+hdbscan
