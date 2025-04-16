@@ -594,7 +594,7 @@ else:
     st.info("Click 'Generate Coverage Feedback' to see risk analysis heatmaps.")
     
     
-# --- Section 3: Brainstorm Risks (renumbered from 5 to 3) ---
+# --- Section 3: Brainstorm Risks (updated parsing logic) ---
 st.subheader("3️⃣ Brainstorm Risks")
 st.write("Generate creative risk suggestions to broaden your analysis.")
 num_brainstorm_risks = st.slider("Number of Suggestions", 1, 5, 5, key="num_brainstorm_risks")
@@ -638,12 +638,15 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
             You are a creative AI risk analysis expert for {domain}. Based on these high-priority risks:
             {suggestions}
 
-            Generate {num_brainstorm_risks} new risk suggestions to broaden the risk analysis. Focus on diverse, overlooked risks that complement the existing ones. Each suggestion should be a concise, one-sentence description of a potential risk.
+            Generate {num_brainstorm_risks} new risk suggestions to broaden the risk analysis. Focus on diverse, overlooked risks that complement the existing ones. Each suggestion must be a concise, one-sentence description of a potential risk.
 
-            Format each suggestion EXACTLY as:
+            Format each suggestion EXACTLY as a bullet point starting with '- Risk:' followed by the description in square brackets, like this:
             - Risk: [description]
 
-            Ensure each suggestion is unique, relevant to the domain, and does not include additional metadata like risk type or stakeholder.
+            For example:
+            - Risk: [The AI might misinterpret economic downturns, leading to overvalued properties.]
+
+            Do not include additional metadata like risk type, subtype, or stakeholder. Ensure each suggestion is unique, relevant to the domain, and formatted precisely as requested.
             """
 
             try:
@@ -657,25 +660,30 @@ if st.button("💡 Generate Risk Suggestions", key="generate_risk_suggestions"):
                     max_tokens=500
                 )
                 brainstorm_output = response.choices[0].message.content
-                st.write("**Raw LLM Response (for debugging):**")
-                st.text(brainstorm_output)  # Debug output
             except Exception as e:
                 st.error(f"Failed to generate suggestions due to API error: {str(e)}")
                 st.stop()
 
-            # Flexible parsing to handle various bullet formats
+            # Improved parsing to handle variations in format
             brainstorm_suggestions = []
             for line in brainstorm_output.split('\n'):
                 line = line.strip()
+                # Primary format: - Risk: [description] or - Risk: description
                 if line.startswith('- Risk:') or line.startswith('* Risk:') or re.match(r'^\d+\.\s*Risk:', line):
-                    # Remove bullet prefix (e.g., "- Risk:", "* Risk:", "1. Risk:")
+                    # Remove the prefix (- Risk:, * Risk:, or numbered Risk:)
                     suggestion = re.sub(r'^- Risk:|\* Risk:|\d+\.\s*Risk:', '', line).strip()
+                    # Handle both bracketed and non-bracketed descriptions
                     if suggestion.startswith('[') and suggestion.endswith(']'):
                         suggestion = suggestion[1:-1]  # Remove square brackets
+                    brainstorm_suggestions.append(suggestion)
+                # Fallback: Look for any bullet-pointed line
+                elif re.match(r'^- |^\* |^\d+\.\s*', line):
+                    suggestion = re.sub(r'^- |^\* |^\d+\.\s*', '', line).strip()
+                    if suggestion:  # Ensure the suggestion is not empty
                         brainstorm_suggestions.append(suggestion)
 
             if not brainstorm_suggestions:
-                st.error("No suggestions were generated. The LLM response did not match the expected format. Please check the raw response above for clues.")
+                st.error("No suggestions were generated. The LLM response did not contain any risk suggestions in a recognizable format.")
                 st.stop()
 
             st.session_state['brainstorm_suggestions'] = brainstorm_suggestions[:num_brainstorm_risks]
