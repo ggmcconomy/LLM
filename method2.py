@@ -418,19 +418,24 @@ if st.button("🔍 Generate Coverage Feedback"):
                 st.write("**Debug: Distribution of Risk Types in User Input (similar_risks):**")
                 st.write(actual_type_freq)
 
-                # Define underrepresented types with a dynamic threshold
-                # Use a softer threshold: flag types where actual frequency is less than 70% of expected, or adjust based on input size
-                input_size_factor = max(1, len(similar_risks) / 10)  # Adjust threshold based on input size
+                # Define underrepresented types with a softer threshold
+                input_size_factor = max(1, len(similar_risks) / 50)  # Softer scaling for smaller inputs
                 underrepresented_types = [
                     t for t in df['risk_type'].unique()
-                    if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.7 / input_size_factor)
+                    if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.9 / input_size_factor)
                 ]
 
-                # Ensure at least some risk types are included, even if not strictly underrepresented
+                # Ensure some risk types are included to avoid empty missed_df
                 if len(underrepresented_types) < 3 and len(missed_types) < 3:
-                    # Add the least represented types to ensure some diversity
                     sorted_types = expected_type_freq.index.tolist()
                     underrepresented_types.extend([t for t in sorted_types if t not in covered_types and t not in underrepresented_types][:3])
+                    if not underrepresented_types:  # If still empty, take the least represented types
+                        underrepresented_types.extend([t for t in sorted_types if t not in underrepresented_types][:3])
+
+                st.write("**Debug: Missed Risk Types:**")
+                st.write(missed_types)
+                st.write("**Debug: Underrepresented Risk Types:**")
+                st.write(underrepresented_types)
 
                 underrepresented_subtypes = [
                     s for s in df['risk_subtype'].unique()
@@ -548,10 +553,12 @@ if st.button("🔍 Generate Coverage Feedback"):
                             missed_df['missed_count'] = (missed_df['missed_count'] / max_count) * 10
                         else:
                             missed_df['missed_count'] = 0
+                    else:
+                        st.warning("No underrepresented or missed risk types found. The Blindspots Heatmap cannot be generated.")
+                        missed_df = pd.DataFrame(columns=['risk_type', 'driver', 'missed_count'])  # Empty DataFrame to avoid errors
 
                     # Fusion Heatmap Data - Weighted combination
                     fusion_df = df.copy()
-                    # Normalize missed_count for underrepresented types
                     if not missed_df.empty:
                         missed_df['missed_weight'] = missed_df['missed_count'] / missed_df['missed_count'].max()
                         missed_dict = {(row['risk_type'], row['driver']): row['missed_weight'] for _, row in missed_df.iterrows()}
@@ -561,12 +568,12 @@ if st.button("🔍 Generate Coverage Feedback"):
                     fusion_df['missed_weight'] = fusion_df.apply(
                         lambda row: missed_dict.get((row['risk_type'], row['driver']), 0), axis=1
                     )
-                    # Weighted combination: severity scaled by missed_weight (0 to 1), but always include some severity
                     fusion_df['combined_score'] = fusion_df['severity'] * (0.5 + 0.5 * fusion_df['missed_weight'])
 
                     # Generate heatmaps
                     create_heatmap(severity_data, 'severity', 'risk_type', 'driver', 'Risk Severity Heatmap', 'severity_heatmap.png')
-                    create_blindspots_heatmap(missed_df, 'risk_type', 'driver', 'Blindspots Heatmap', 'blindspots_heatmap.png')
+                    if not missed_df.empty:
+                        create_blindspots_heatmap(missed_df, 'risk_type', 'driver', 'Blindspots Heatmap', 'blindspots_heatmap.png')
                     create_fusion_heatmap(fusion_df, 'risk_type', 'driver', 'Fusion Heatmap: High-Risk Blindspots', 'fusion_heatmap.png')
 
                     st.session_state['feedback'] = feedback
