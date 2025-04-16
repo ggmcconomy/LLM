@@ -412,14 +412,8 @@ if st.button("🔍 Generate Coverage Feedback"):
                 expected_type_freq = df['risk_type'].value_counts() / total_risks
                 actual_type_freq = pd.Series([r['risk_type'] for r in similar_risks]).value_counts() / len(similar_risks)
 
-                # Debug: Display distributions
-                st.write("**Debug: Distribution of Risk Types in Dataset (df):**")
-                st.write(expected_type_freq)
-                st.write("**Debug: Distribution of Risk Types in User Input (similar_risks):**")
-                st.write(actual_type_freq)
-
                 # Define underrepresented types with a softer threshold
-                input_size_factor = max(1, len(similar_risks) / 50)  # Softer scaling for smaller inputs
+                input_size_factor = max(1, len(similar_risks) / 50)
                 underrepresented_types = [
                     t for t in df['risk_type'].unique()
                     if t not in missed_types and (t not in actual_type_freq or actual_type_freq.get(t, 0) < expected_type_freq.get(t, 0) * 0.9 / input_size_factor)
@@ -429,13 +423,8 @@ if st.button("🔍 Generate Coverage Feedback"):
                 if len(underrepresented_types) < 3 and len(missed_types) < 3:
                     sorted_types = expected_type_freq.index.tolist()
                     underrepresented_types.extend([t for t in sorted_types if t not in covered_types and t not in underrepresented_types][:3])
-                    if not underrepresented_types:  # If still empty, take the least represented types
+                    if not underrepresented_types:
                         underrepresented_types.extend([t for t in sorted_types if t not in underrepresented_types][:3])
-
-                st.write("**Debug: Missed Risk Types:**")
-                st.write(missed_types)
-                st.write("**Debug: Underrepresented Risk Types:**")
-                st.write(underrepresented_types)
 
                 underrepresented_subtypes = [
                     s for s in df['risk_subtype'].unique()
@@ -555,7 +544,7 @@ if st.button("🔍 Generate Coverage Feedback"):
                             missed_df['missed_count'] = 0
                     else:
                         st.warning("No underrepresented or missed risk types found. The Blindspots Heatmap cannot be generated.")
-                        missed_df = pd.DataFrame(columns=['risk_type', 'driver', 'missed_count'])  # Empty DataFrame to avoid errors
+                        missed_df = pd.DataFrame(columns=['risk_type', 'driver', 'missed_count'])
 
                     # Fusion Heatmap Data - Weighted combination
                     fusion_df = df.copy()
