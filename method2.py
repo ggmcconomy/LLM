@@ -113,11 +113,11 @@ def create_heatmap(df, value_col, index_col, columns_col, title, filename):
         return False
 
 def create_blindspots_heatmap(missed_df, index_col, columns_col, title, filename):
-    """Create a heatmap for blindspots (missed areas)."""
+    """Create a heatmap for blindspots (missed areas) without numeric annotations."""
     try:
         pivot_table = missed_df.pivot_table(values='missed_count', index=index_col, columns=columns_col, aggfunc='sum', fill_value=0)
         plt.figure(figsize=(10, 8))
-        sns.heatmap(pivot_table, annot=True, cmap='Blues', fmt='.0f')
+        sns.heatmap(pivot_table, cmap='Blues', fmt='.0f', annot=False)  # Remove annotations with annot=False
         plt.title(title)
         plt.tight_layout()
         plt.savefig(filename)
