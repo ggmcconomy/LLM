@@ -593,20 +593,6 @@ if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_gener
 else:
     st.info("Click 'Generate Coverage Feedback' to see risk analysis heatmaps.")
     
-# --- Section 3: Coverage Visualization ---
-if 'heatmaps_generated' in st.session_state and st.session_state['heatmaps_generated']:
-    st.subheader("3️⃣ Coverage Visualization")
-    st.write("View risk severity, blindspots, and critical high-risk blindspots.")
-    col1, col2, col3 = st.columns(3)
-    try:
-        with col1:
-            st.image("severity_heatmap.png", caption="Risk Severity Heatmap: Darker colors indicate higher severity.", use_container_width=True)
-        with col2:
-            st.image("blindspots_heatmap.png", caption="Blindspots Heatmap: Missed risk areas.", use_container_width=True)
-        with col3:
-            st.image("fusion_heatmap.png", caption="Fusion Heatmap: High-Risk Blindspots.", use_container_width=True)
-    except FileNotFoundError:
-        st.error("Heatmaps failed to generate. Please try generating feedback again.")
     
 # --- Section 3: Brainstorm Risks (renumbered from 5 to 3) ---
 st.subheader("3️⃣ Brainstorm Risks")
