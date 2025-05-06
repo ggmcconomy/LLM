@@ -1,0 +1,562 @@
+import os
+import json
+import uuid
+import requests
+import pandas as pd
+import numpy as np
+import streamlit as st
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+from urllib.parse import urlencode
+from bs4 import BeautifulSoup
+from datetime import datetime
+import matplotlib.pyplot as plt
+from collections import Counter
+import re
+from sentence_transformers import SentenceTransformer
+import faiss
+from openai import OpenAI
+
+# Configuration
+st.set_page_config(page_title="Method 2 - AI Risk Effectiveness Test", layout="wide")
+st.title("🤖 AI Risk Effectiveness Dashboard")
+
+# Load secrets
+try:
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    MURAL_CLIENT_ID = st.secrets["MURAL_CLIENT_ID"]
+    MURAL_CLIENT_SECRET = st.secrets["MURAL_CLIENT_SECRET"]
+    MURAL_BOARD_ID = st.secrets["MURAL_BOARD_ID"]
+    MURAL_REDIRECT_URI = st.secrets["MURAL_REDIRECT_URI"]
+    MURAL_WORKSPACE_ID = st.secrets.get("MURAL_WORKSPACE_ID", "aiimpacttesting2642")
+except KeyError as e:
+    st.error(f"Missing secret: {e}. Please configure secrets in .streamlit/secrets.toml.")
+    st.stop()
+
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Utility Functions
+def normalize_mural_id(mural_id, workspace_id=MURAL_WORKSPACE_ID):
+    prefix = f"{workspace_id}."
+    if mural_id.startswith(prefix):
+        return mural_id[len(prefix):]
+    return mural_id
+
+def clean_html_text(html_text):
+    if not html_text:
+        return ""
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        text = soup.get_text(separator=" ").strip()
+        return text if text else ""
+    except Exception as e:
+        st.error(f"Error cleaning HTML: {str(e)}")
+        return ""
+
+def log_feedback(risk_description, user_feedback, disagreement_reason=""):
+    feedback_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "risk_description": risk_description,
+        "user_feedback": user_feedback,
+        "disagreement_reason": disagreement_reason
+    }
+    feedback_df = pd.DataFrame([feedback_data])
+    feedback_file = "feedback_log.csv"
+    try:
+        if os.path.exists(feedback_file):
+            existing_df = pd.read_csv(feedback_file)
+            feedback_df = pd.concat([existing_df, feedback_df], ignore_index=True)
+        feedback_df.to_csv(feedback_file, index=False)
+    except Exception as e:
+        st.error(f"Error logging feedback: {str(e)}")
+
+def get_cluster_labels(df):
+    cluster_labels = {}
+    for cluster_id in df['cluster'].unique():
+        cluster_risks = df[df['cluster'] == cluster_id]['risk_description'].dropna()
+        if not cluster_risks.empty:
+            text = ' '.join(cluster_risks).lower()
+            words = re.findall(r'\b\w+\b', text)
+            stopwords = {'the', 'and', 'of', 'to', 'in', 'a', 'is', 'that', 'for', 'on', 'with', 'by', 'at', 'this', 'but', 'from', 'or', 'an', 'are'}
+            words = [w for w in words if w not in stopwords and len(w) > 3]
+            word_counts = Counter(words)
+            top_words = [word for word, _ in word_counts.most_common(2)]
+            label = ' '.join(top_words).title() if top_words else f"Cluster {cluster_id}"
+            cluster_labels[cluster_id] = label
+        else:
+            cluster_labels[cluster_id] = f"Cluster {cluster_id}"
+    return cluster_labels
+
+def create_coverage_chart(title, categories, covered_counts, missed_counts, filename):
+    try:
+        plt.figure(figsize=(6, 4))
+        x = np.arange(len(categories))
+        plt.bar(x - 0.2, covered_counts, 0.4, label='Covered', color='#2ecc71')
+        plt.bar(x + 0.2, missed_counts, 0.4, label='Missed', color='#e74c3c')
+        plt.xlabel(title.split(' ')[-1])
+        plt.ylabel('Number of Risks')
+        plt.title(title)
+        plt.xticks(x, categories, rotation=45, ha='right')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(filename)
+        plt.close()
+        return True
+    except Exception as e:
+        st.error(f"Error creating chart {filename}: {str(e)}")
+        return False
+
+def create_coverage_charts(covered_stakeholders, missed_stakeholders, covered_types, missed_types, covered_subtypes, missed_subtypes, top_n_subtypes=5):
+    try:
+        plt.style.use('ggplot')
+    except Exception as e:
+        st.warning(f"ggplot style failed: {str(e)}. Using default style.")
+        plt.style.use('default')
+
+    stakeholders = sorted(set(covered_stakeholders + missed_stakeholders))
+    covered_counts = [covered_stakeholders.count(s) for s in stakeholders]
+    missed_counts = [missed_stakeholders.count(s) for s in stakeholders]
+    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
+    stakeholders = [stakeholders[i] for i in non_zero_indices]
+    covered_counts = [covered_counts[i] for i in non_zero_indices]
+    missed_counts = [missed_counts[i] for i in non_zero_indices]
+    
+    if stakeholders:
+        create_coverage_chart("Stakeholder Coverage Gaps", stakeholders, covered_counts, missed_counts, 'stakeholder_coverage.png')
+    
+    risk_types = sorted(set(covered_types + missed_types))
+    covered_counts = [covered_types.count(t) for t in risk_types]
+    missed_counts = [missed_types.count(t) for t in risk_types]
+    non_zero_indices = [i for i, (c, m) in enumerate(zip(covered_counts, missed_counts)) if c > 0 or m > 0]
+    risk_types = [risk_types[i] for i in non_zero_indices]
+    covered_counts = [covered_counts[i] for i in non_zero_indices]
+    missed_counts = [missed_counts[i] for i in non_zero_indices]
+    
+    if risk_types:
+        create_coverage_chart("Risk Type Coverage Gaps", risk_types, covered_counts, missed_counts, 'risk_type_coverage.png')
+
+    subtype_counts = Counter(missed_subtypes)
+    top_missed_subtypes = [subtype for subtype, _ in subtype_counts.most_common(top_n_subtypes)]
+    covered_counts = [covered_subtypes.count(s) for s in top_missed_subtypes]
+    missed_counts = [missed_subtypes.count(s) for s in top_missed_subtypes]
+    
+    if top_missed_subtypes:
+        create_coverage_chart(f"Top {top_n_subtypes} Overlooked Risk Subtype Gaps", top_missed_subtypes, covered_counts, missed_counts, 'risk_subtype_coverage.png')
+
+# OAuth Functions (unchanged)
+def get_authorization_url():
+    params = {
+        "client_id": MURAL_CLIENT_ID,
+        "redirect_uri": MURAL_REDIRECT_URI,
+        "scope": "murals:read murals:write",
+        "state": str(uuid.uuid4()),
+        "response_type": "code"
+    }
+    return f"https://app.mural.co/api/public/v1/authorization/oauth2/?{urlencode(params)}"
+
+def exchange_code_for_token(code):
+    with st.spinner("Authenticating with Mural..."):
+        url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
+        data = {
+            "client_id": MURAL_CLIENT_ID,
+            "client_secret": MURAL_CLIENT_SECRET,
+            "redirect_uri": MURAL_REDIRECT_URI,
+            "code": code,
+            "grant_type": "authorization_code"
+        }
+        try:
+            response = requests.post(url, data=data, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"Authentication failed: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Authentication error: {str(e)}")
+            return None
+
+def refresh_access_token(refresh_token):
+    with st.spinner("Refreshing Mural token..."):
+        url = "https://app.mural.co/api/public/v1/authorization/oauth2/token"
+        data = {
+            "client_id": MURAL_CLIENT_ID,
+            "client_secret": MURAL_CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token"
+        }
+        try:
+            response = requests.post(url, data=data, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                st.error(f"Token refresh failed: {response.status_code}")
+                return None
+        except Exception as e:
+            st.error(f"Token refresh error: {str(e)}")
+            return None
+
+def list_murals(auth_token):
+    url = "https://app.mural.co/api/public/v1/murals"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+    try:
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        response = session.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json().get("value", [])
+        else:
+            st.error(f"Failed to list murals: {response.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Error listing murals: {str(e)}")
+        return []
+
+def verify_mural(auth_token, mural_id):
+    url = f"https://app.mural.co/api/public/v1/murals/{mural_id}"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {auth_token}"
+    }
+    try:
+        session = requests.Session()
+        retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+        response = session.get(url, headers=headers, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        st.error(f"Error verifying mural: {str(e)}")
+        return False
+
+# Handle OAuth Flow
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+    st.session_state.refresh_token = None
+    st.session_state.token_expires_in = None
+    st.session_state.token_timestamp = None
+
+query_params = st.query_params
+auth_code = query_params.get("code")
+if auth_code and not st.session_state.access_token:
+    token_data = exchange_code_for_token(auth_code)
+    if token_data:
+        st.session_state.access_token = token_data["access_token"]
+        st.session_state.refresh_token = token_data.get("refresh_token")
+        st.session_state.token_expires_in = token_data.get("expires_in", 900)
+        st.session_state.token_timestamp = pd.Timestamp.now().timestamp()
+        st.query_params.clear()
+        st.success("Authenticated with Mural!")
+        st.rerun()
+
+if not st.session_state.access_token:
+    auth_url = get_authorization_url()
+    st.markdown(f"Please [authorize the app]({auth_url}) to access Mural.")
+    st.info("Click the link above, log into Mural, and authorize.")
+    st.stop()
+
+if st.session_state.access_token:
+    current_time = pd.Timestamp.now().timestamp()
+    if (current_time - st.session_state.token_timestamp) > (st.session_state.token_expires_in - 60):
+        token_data = refresh_access_token(st.session_state.refresh_token)
+        if token_data:
+            st.session_state.access_token = token_data["access_token"]
+            st.session_state.refresh_token = token_data.get("refresh_token", st.session_state.refresh_token)
+            st.session_state.token_expires_in = token_data.get("expires_in", 900)
+            st.session_state.token_timestamp = pd.Timestamp.now().timestamp()
+
+# Load Method 1 Outputs
+st.subheader("Load Method 1 Outputs")
+available_configs = []
+config_files = [f for f in os.listdir() if f.startswith("clean_risks_depth") and f.endswith(".csv")]
+for f in config_files:
+    config_key = f.replace("clean_risks_", "").replace(".csv", "")
+    available_configs.append(config_key)
+
+if not available_configs:
+    st.error("No Method 1 output files found. Please run Method 1 first.")
+    st.stop()
+
+selected_config = st.selectbox("Select Configuration to Test", ["All"] + available_configs)
+st.info("Select 'All' to test all configurations or a specific one for a quicker analysis.")
+
+# Simulated Human Risks with Deliberate Omissions
+human_risks = [
+    "Inaccurate property valuations due to outdated market data affecting homeowners.",
+    "Lack of transparency in AI valuation process reducing trust among real estate agents.",
+    "High computational costs of AI system impacting municipal budgets.",
+    "Data privacy breaches exposing homeowner information to unauthorized parties.",
+    "System downtime disrupting tax assessment schedules for local governments.",
+    "AI system failing to account for local zoning changes affecting valuation accuracy.",
+    "Overreliance on AI valuations reducing human oversight by assessors."
+]
+omitted_risks = [
+    # Easy to spot
+    "Bias in AI valuations disproportionately affecting low-income neighborhoods, leading to unfair tax burdens.",
+    # Moderate
+    "Regulatory non-compliance with fair housing laws due to biased valuation outputs, risking legal penalties.",
+    # Hard to spot
+    "Long-term reputational damage to tax authorities from persistent undetected errors in AI valuations."
+]
+
+# Sidebar Settings
+with st.sidebar:
+    st.header("🔧 Settings")
+    num_clusters = st.slider("Number of Clusters (Themes)", 5, 20, 10)
+    severity_threshold = st.slider("Severity Threshold", 0.0, 5.0, 4.0, 0.5)
+    st.markdown("---")
+    st.subheader("📥 Mural Actions")
+    custom_mural_id = st.text_input("Custom Mural ID (optional)", value=MURAL_BOARD_ID)
+    if st.button("🔍 List Murals"):
+        with st.spinner("Listing murals..."):
+            murals = list_murals(st.session_state.access_token)
+            if murals:
+                st.write("Available Murals:", [{"id": m["id"], "title": m.get("title", "Untitled")} for m in murals])
+            else:
+                st.warning("No murals found.")
+    if st.button("🔄 Pull Sticky Notes"):
+        with st.spinner("Pulling sticky notes..."):
+            try:
+                headers = {'Authorization': f'Bearer {st.session_state.access_token}'}
+                mural_id = custom_mural_id or MURAL_BOARD_ID
+                if not verify_mural(st.session_state.access_token, mural_id):
+                    mural_id = normalize_mural_id(mural_id)
+                    if not verify_mural(st.session_state.access_token, mural_id):
+                        st.error(f"Mural {mural_id} not found.")
+                        st.stop()
+                url = f"https://app.mural.co/api/public/v1/murals/{mural_id}/widgets"
+                session = requests.Session()
+                retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+                session.mount('https://', HTTPAdapter(max_retries=retries))
+                mural_data = session.get(url, headers=headers, timeout=10)
+                if mural_data.status_code == 200:
+                    widgets = mural_data.json().get("value", mural_data.json().get("data", []))
+                    sticky_widgets = [w for w in widgets if w.get('type', '').replace(' ', '_').lower() == 'sticky_note']
+                    stickies = []
+                    for w in sticky_widgets:
+                        raw_text = w.get('htmlText') or w.get('text') or ''
+                        if raw_text:
+                            cleaned_text = clean_html_text(raw_text)
+                            if cleaned_text:
+                                stickies.append(cleaned_text)
+                    st.session_state['mural_notes'] = stickies
+                    st.success(f"Pulled {len(stickies)} sticky notes.")
+                else:
+                    st.error(f"Failed to pull sticky notes: {mural_data.status_code}")
+                    if mural_data.status_code == 401:
+                        st.warning("OAuth token invalid. Please re-authenticate.")
+                        st.session_state.access_token = None
+                        auth_url = get_authorization_url()
+                        st.markdown(f"[Re-authorize the app]({auth_url}).")
+                    elif mural_data.status_code == 403:
+                        st.warning("Access denied. Ensure collaborator access.")
+                    elif mural_data.status_code == 404:
+                        st.warning(f"Mural ID {mural_id} not found.")
+            except Exception as e:
+                st.error(f"Error connecting to Mural: {str(e)}")
+    if st.button("🗑️ Clear Session"):
+        st.session_state.clear()
+        st.rerun()
+
+# Section 1: Input Human Risks
+st.subheader("1️⃣ Input Human Risks")
+st.write("Enter or pull risks from Mural to simulate a chartered surveyor's risk assessment.")
+default_notes = st.session_state.get('mural_notes', human_risks)
+default_text = "\n".join(default_notes) if default_notes else "\n".join(human_risks)
+user_input = st.text_area("", value=default_text, height=200, placeholder="Enter risks, one per line.")
+
+# Section 2: Load and Analyze Method 1 Data
+st.subheader("2️⃣ Load and Analyze Method 1 Data")
+if st.button("Load Data and Analyze"):
+    with st.spinner("Loading and analyzing data..."):
+        configs_to_test = available_configs if selected_config == "All" else [selected_config]
+        results = {}
+
+        for config_key in configs_to_test:
+            try:
+                # Load CSV
+                df = pd.read_csv(f"clean_risks_{config_key}.csv")
+                numeric_columns = ['severity', 'probability', 'combined_score']
+                for col in numeric_columns:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Load embeddings and FAISS index
+                embeddings = np.load(f"embeddings_{config_key}.npy")
+                index = faiss.read_index(f"faiss_index_{config_key}.faiss")
+                results[config_key] = {"df": df, "embeddings": embeddings, "index": index}
+            except FileNotFoundError as e:
+                st.error(f"Missing file for {config_key}: {str(e)}")
+                continue
+
+        if not results:
+            st.error("No valid data loaded. Please ensure Method 1 outputs are available.")
+            st.stop()
+
+        # Analyze effectiveness
+        human_risks = [r.strip() for r in user_input.split('\n') if r.strip()]
+        human_embeddings = np.array(embedder.encode(human_risks))
+        effectiveness_results = {}
+        for config_key, data in results.items():
+            df = data["df"]
+            index = data["index"]
+            distances, indices = index.search(human_embeddings, 5)
+            similar_risks = [df.iloc[idx].to_dict() for idx in indices.flatten()]
+
+            # Identify gaps
+            covered_types = {r['risk_type'] for r in similar_risks}
+            covered_subtypes = {r['subtype'] for r in similar_risks}
+            covered_stakeholders = {r['source'] for r in similar_risks}  # Using 'source' as stakeholder
+            missed_types = sorted(list(set(df['risk_type']) - covered_types))
+            missed_subtypes = sorted(list(set(df['subtype']) - covered_subtypes))
+            missed_stakeholders = sorted(list(set(df['source']) - covered_stakeholders))
+
+            # Check for omitted risks
+            omitted_detected = []
+            for omitted in omitted_risks:
+                omitted_embedding = embedder.encode([omitted])
+                distances, indices = index.search(omitted_embedding, 1)
+                closest_risk = df.iloc[indices[0][0]]['risk_description']
+                similarity = cosine_similarity(omitted_embedding, embedder.encode([closest_risk]))[0][0]
+                detected = similarity > 0.8
+                omitted_detected.append({"risk": omitted, "detected": detected, "closest_risk": closest_risk, "similarity": similarity})
+
+            # Analyze stakeholder weight alignment
+            human_stakeholders = [r.split("affecting ")[1].split()[0] for r in human_risks if "affecting" in r]
+            tool_stakeholder_counts = df['source'].value_counts().to_dict()
+            stakeholder_alignment = {s: tool_stakeholder_counts.get(s, 0) for s in human_stakeholders}
+
+            # Quantify outputs
+            risk_count = len(df)
+            risk_types = df['risk_type'].value_counts().to_dict()
+            clusters = len(df['cluster'].unique()) - (1 if -1 in df['cluster'] else 0)  # Exclude noise cluster
+
+            # Generate feedback
+            context_examples = []
+            for category, items in [
+                ("Missed Risk Types", missed_types),
+                ("Missed Risk Subtypes", missed_subtypes),
+                ("Missed Stakeholders", missed_stakeholders)
+            ]:
+                if items:
+                    for item in items[:3]:
+                        if "Types" in category:
+                            example_rows = df[df['risk_type'] == item].head(1)
+                        elif "Subtypes" in category:
+                            example_rows = df[df['subtype'] == item].head(1)
+                        elif "Stakeholders" in category:
+                            example_rows = df[df['source'] == item].head(1)
+                        if not example_rows.empty:
+                            example = example_rows.iloc[0]
+                            context_examples.append(f"{category}: {item} - Example: {example['risk_description']} (Type: {example['risk_type']}, Subtype: {example['subtype']}, Stakeholder: {example['source']})")
+
+            context_str = "\n".join(context_examples)
+            prompt = f"""
+            You are an AI risk analysis expert for property valuation AI systems. The user has provided these risks:
+            {chr(10).join(f'- {r}' for r in human_risks)}
+
+            Using these examples from the tool's risk database:
+            {context_str}
+
+            Provide feedback on the gaps in the user's risk assessment:
+            1. **Missing Risk Types, Subtypes, or Stakeholders**: Identify and explain critical omissions.
+            2. **Suggestions**: Offer actionable recommendations to address gaps.
+            Ensure feedback is concise, relevant, and actionable.
+            """
+            try:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful AI risk advisor specializing in property valuation."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                feedback = response.choices[0].message.content
+            except Exception as e:
+                feedback = f"Error generating feedback: {str(e)}"
+
+            effectiveness_results[config_key] = {
+                "omitted_detected": omitted_detected,
+                "feedback": feedback,
+                "stakeholder_alignment": stakeholder_alignment,
+                "risk_count": risk_count,
+                "risk_types": risk_types,
+                "clusters": clusters,
+                "missed_types": missed_types,
+                "missed_stakeholders": missed_stakeholders
+            }
+
+        st.session_state['effectiveness_results'] = effectiveness_results
+
+# Section 3: Display Effectiveness Results
+if 'effectiveness_results' in st.session_state:
+    st.subheader("3️⃣ Effectiveness Results")
+    for config_key, result in st.session_state['effectiveness_results'].items():
+        st.write(f"### Configuration: {config_key}")
+        
+        # Omitted Risks Detection
+        st.write("**Detection of Omitted Risks**")
+        for item in result['omitted_detected']:
+            status = "Detected" if item['detected'] else "Not Detected"
+            st.markdown(f"- {item['risk']}: {status} (Similarity: {item['similarity']:.2f}, Closest: {item['closest_risk']})")
+        
+        # Feedback
+        st.write("**Feedback on Gaps**")
+        st.markdown(result['feedback'])
+        
+        # Stakeholder Alignment
+        st.write("**Stakeholder Alignment**")
+        for stakeholder, count in result['stakeholder_alignment'].items():
+            st.write(f"- {stakeholder}: {count} risks identified")
+        
+        # Output Analysis
+        st.write("**Output Analysis**")
+        st.write(f"- Total Risks: {result['risk_count']}")
+        st.write(f"- Risk Types: {result['risk_types']}")
+        st.write(f"- Number of Clusters: {result['clusters']}")
+        st.write(f"- Missed Risk Types: {result['missed_types']}")
+        st.write(f"- Missed Stakeholders: {result['missed_stakeholders']}")
+
+# Section 4: Expert Evaluation
+st.subheader("4️⃣ Expert Evaluation")
+st.write("As a chartered surveyor, evaluate the tool’s effectiveness and feedback usefulness.")
+if 'effectiveness_results' in st.session_state:
+    for config_key, result in st.session_state['effectiveness_results'].items():
+        st.write(f"### Evaluation for {config_key}")
+        with st.form(key=f"eval_{config_key}"):
+            st.write("**Rate Detection of Omitted Risks (1-5)**")
+            detection_score = st.slider("Detection Score", 1, 5, 3, key=f"detection_{config_key}")
+            st.write("**Rate Usefulness of Feedback (1-5)**")
+            feedback_score = st.slider("Feedback Usefulness", 1, 5, 3, key=f"feedback_{config_key}")
+            comments = st.text_area("Additional Comments", key=f"comments_{config_key}")
+            if st.form_submit_button("Submit Evaluation"):
+                evaluation_data = {
+                    "config": config_key,
+                    "detection_score": detection_score,
+                    "feedback_score": feedback_score,
+                    "comments": comments,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                evaluation_df = pd.DataFrame([evaluation_data])
+                evaluation_file = "evaluation_log.csv"
+                try:
+                    if os.path.exists(evaluation_file):
+                        existing_df = pd.read_csv(evaluation_file)
+                        evaluation_df = pd.concat([existing_df, evaluation_df], ignore_index=True)
+                    evaluation_df.to_csv(evaluation_file, index=False)
+                    st.success(f"Evaluation for {config_key} submitted!")
+                except Exception as e:
+                    st.error(f"Error logging evaluation: {str(e)}")
+
+# Section 5: Download Evaluation Summary
+st.subheader("5️⃣ Download Evaluation Summary")
+if os.path.exists("evaluation_log.csv"):
+    with open("evaluation_log.csv", "rb") as f:
+        st.download_button(
+            "Download Evaluation Log",
+            data=f,
+            file_name="evaluation_log.csv",
+            mime="text/csv"
+        )
